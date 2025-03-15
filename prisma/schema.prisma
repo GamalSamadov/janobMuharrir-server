@@ -12,7 +12,6 @@ model User {
   email             String   @unique
   name              String?
   password          String
-  avatarPath        String?
   verificationToken String?  @default(cuid()) @map("verification_token")
   verified          Boolean  @default(false)
   createdAt         DateTime @default(now()) @map("created_at")

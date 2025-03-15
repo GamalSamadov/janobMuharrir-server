@@ -1,18 +1,21 @@
 import { PrismaClient } from '@prisma/client'
-import bodyParser from 'body-parser'
 import cookieParser from 'cookie-parser'
 import cors from 'cors'
-import 'dotenv/config'
+import * as dotenv from 'dotenv'
 import express, { Request, Response } from 'express'
 
 import { logger } from '@/lib/logger'
+
+import { authController, userController } from './controllers'
+
+dotenv.config()
 
 export const prisma = new PrismaClient()
 
 const app = express()
 
 async function main() {
-	app.use(bodyParser.json())
+	app.use(express.json())
 	app.use(cookieParser())
 
 	app.use(
@@ -23,6 +26,9 @@ async function main() {
 		})
 	)
 
+	app.use('/api', authController)
+	app.use('/api', userController)
+
 	app.all('*', (req: Request, res: Response) => {
 		res.status(404).json({ message: `Route ${req.originalUrl} Not Found` })
 	})
@@ -30,7 +36,7 @@ async function main() {
 	const port = process.env.PORT || 4200
 
 	app.listen(port, () => {
-		logger.info(`Server running on http://localhost:${port}`)
+		logger.info(`Server is running on: http://localhost:${port}`)
 	})
 }
 

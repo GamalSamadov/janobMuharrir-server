@@ -1,10 +1,10 @@
 import pino from 'pino'
 
-const isProduction = process.env.NODE_ENV === 'production'
+import { IS_PRODUCTION } from '@/constants'
 
 export const logger = pino({
 	level: process.env.LOG_LEVEL || 'info',
-	transport: !isProduction
+	transport: !IS_PRODUCTION
 		? {
 				target: 'pino-pretty',
 				options: {
