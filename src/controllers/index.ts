@@ -1,2 +1,5 @@
-export * from './auth.controller'
-export * from './user.controller'
+export * from './auth/auth.controller'
+export * from './user/user.controller'
+export * from './session/session.controller'
+export * from './transcript/transcript.controller'
+export * from './event/event.controller'

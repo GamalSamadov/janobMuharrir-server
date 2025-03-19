@@ -8,7 +8,7 @@ const router = Router()
 const refreshTokenService = new RefreshTokenService()
 
 router.post(
-	'/auth/login',
+	'/login',
 	body('email').isEmail(),
 	body('password').isLength({ min: 6 }),
 	async (req: Request, res: Response): Promise<void> => {
@@ -33,7 +33,7 @@ router.post(
 )
 
 router.post(
-	'/auth/register',
+	'/register',
 	body('email').isEmail(),
 	body('password').isLength({ min: 6 }),
 	async (req: Request, res: Response): Promise<void> => {
@@ -59,7 +59,7 @@ router.post(
 )
 
 router.post(
-	'/auth/access-token',
+	'/access-token',
 	async (req: Request, res: Response): Promise<void> => {
 		const refreshTokenFromCookies =
 			req.cookies[refreshTokenService.REFRESH_TOKEN_NAME]
@@ -82,16 +82,13 @@ router.post(
 	}
 )
 
-router.post(
-	'/auth/logout',
-	async (req: Request, res: Response): Promise<void> => {
-		try {
-			refreshTokenService.removeRefreshTokenResponse(res)
-			res.status(200).json(true)
-		} catch (error) {
-			res.status(400).json({ message: error.message })
-		}
+router.post('/logout', async (req: Request, res: Response): Promise<void> => {
+	try {
+		refreshTokenService.removeRefreshTokenResponse(res)
+		res.status(200).json(true)
+	} catch (error) {
+		res.status(400).json({ message: error.message })
 	}
-)
+})
 
 export { router as authController }

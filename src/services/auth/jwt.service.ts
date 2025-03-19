@@ -3,9 +3,13 @@ import * as jwt from 'jsonwebtoken'
 import { JWT_SECRET } from '@/constants'
 import { logger } from '@/lib/logger'
 
+import { RefreshTokenService } from './refresh-token.service'
+
+const refreshTokenService = new RefreshTokenService()
+const refreshTokenExpiresIn = refreshTokenService.EXPIRE_DAY_REFRESH_TOKEN
+
 export class JWTService {
-	readonly ACCESS_TOKEN_EXPIRATION = '1h'
-	readonly REFRESH_TOKEN_EXPIRATION = '7d'
+	readonly ACCESS_TOKEN_EXPIRATION = '7d'
 
 	sign(payload: object, options?: jwt.SignOptions) {
 		return jwt.sign(payload, JWT_SECRET, options)
@@ -25,6 +29,6 @@ export class JWTService {
 	}
 
 	signRefreshToken(payload: object) {
-		return this.sign(payload, { expiresIn: this.REFRESH_TOKEN_EXPIRATION })
+		return this.sign(payload, { expiresIn: refreshTokenExpiresIn })
 	}
 }

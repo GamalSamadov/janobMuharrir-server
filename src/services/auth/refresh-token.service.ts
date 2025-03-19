@@ -3,7 +3,7 @@ import { Response } from 'express'
 import { IS_PRODUCTION } from '@/constants'
 
 export class RefreshTokenService {
-	readonly EXPIRE_DAY_REFRESH_TOKEN = 1
+	readonly EXPIRE_DAY_REFRESH_TOKEN = 30
 	readonly REFRESH_TOKEN_NAME = 'refresh_token'
 
 	addRefreshTokenResponse(res: Response, refreshToken: string) {

@@ -7,6 +7,10 @@ import { AuthDto } from '@/dto/auth.dto'
 import { UserService } from '@/services/user'
 
 import { JWTService } from './jwt.service'
+import { RefreshTokenService } from './refresh-token.service'
+
+const refreshTokenService = new RefreshTokenService()
+const refreshTokenExpiresIn = refreshTokenService.EXPIRE_DAY_REFRESH_TOKEN
 
 class AuthService {
 	private readonly userService = new UserService()
@@ -41,17 +45,17 @@ class AuthService {
 	}
 
 	async buildResponseObject(user: User) {
-		const tokens = await this.issueTokens(user.id)
+		const tokens = await this.issueTokens(user.id, user.email)
 		return { user: this.omitPassword(user), ...tokens }
 	}
 
-	private async issueTokens(userId: string) {
+	private async issueTokens(userId: string, email: string) {
 		const payload = { id: userId }
 		const accessToken = this.jwt.sign(payload, {
 			expiresIn: this.jwt.ACCESS_TOKEN_EXPIRATION
 		})
 		const refreshToken = this.jwt.sign(payload, {
-			expiresIn: this.jwt.REFRESH_TOKEN_EXPIRATION
+			expiresIn: refreshTokenExpiresIn
 		})
 
 		return { accessToken, refreshToken }

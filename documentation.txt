@@ -1,0 +1,18 @@
+Login POST:
+/api/auth/login -body(email, password)
+Register POST:
+/api/auth/register -body(email, password)
+AccessToken POST:
+/api/auth/access-token 
+
+Profile GET:
+/api/users/profile
+
+Session GET:
+/api/sessions/start
+
+Events get all GET:
+/api/events/:sessionId/find-all
+
+Get event GET SSE (Server Sent Events):
+/api/events/:sessionI

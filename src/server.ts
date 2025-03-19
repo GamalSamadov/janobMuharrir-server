@@ -4,9 +4,14 @@ import cors from 'cors'
 import * as dotenv from 'dotenv'
 import express, { Request, Response } from 'express'
 
+import {
+	authController,
+	eventController,
+	sessionController,
+	transcriptController,
+	userController
+} from '@/controllers'
 import { logger } from '@/lib/logger'
-
-import { authController, userController } from './controllers'
 
 dotenv.config()
 
@@ -26,8 +31,11 @@ async function main() {
 		})
 	)
 
-	app.use('/api', authController)
-	app.use('/api', userController)
+	app.use('/api/auth', authController)
+	app.use('/api/users', userController)
+	app.use('/api/sessions', sessionController)
+	app.use('/api/events', eventController)
+	app.use('/api', transcriptController)
 
 	app.all('*', (req: Request, res: Response) => {
 		res.status(404).json({ message: `Route ${req.originalUrl} Not Found` })
