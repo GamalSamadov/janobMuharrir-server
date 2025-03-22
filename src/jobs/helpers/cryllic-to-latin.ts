@@ -74,7 +74,7 @@ const cyrillicToLatin: { [key: string]: string } = {
 	Ҳ: 'H',
 	ҳ: 'h',
 	Ў: `O${apostrophe}`,
-	ў: `o${apostrophe}`, // Correct Oʻ/oʻ
+	ў: `o${apostrophe}` // Correct Oʻ/oʻ
 }
 
 export function convertToUzbekLatin(text: string): string {

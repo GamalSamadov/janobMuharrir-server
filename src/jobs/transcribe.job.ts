@@ -1,24 +1,30 @@
-import fs from 'fs'
-import path from 'path'
+import ytdl from '@distube/ytdl-core'
+import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
+import ffprobeInstaller from '@ffprobe-installer/ffprobe'
+import ffmpeg from 'fluent-ffmpeg'
 import { performance } from 'perf_hooks'
 
+import {
+	convertToUzbekLatin,
+	deleteGCSFile,
+	editTranscribed,
+	formatDuration,
+	getGCSFileStream,
+	transcribeAudioElevenLabs,
+	transcribeWithGoogle,
+	uploadStreamToGCS
+} from '@/jobs/helpers'
 import { logger } from '@/lib/logger'
 import { userSession } from '@/services/session/session.service'
 import {
 	transcriptEventService,
 	transcriptService
 } from '@/services/transcript/transcript.service'
-import { convertToUzbekLatin } from '@/utils/cryllic-to-latin.util'
-import { downloadYoutubeAudio } from '@/utils/download-audio.util'
-import { editTranscribed } from '@/utils/edit-transcribed .util'
-import { formatDuration } from '@/utils/format-duration.util'
-import { transcribeWithGoogle, uploadAudioToGCS } from '@/utils/google-stt.util'
-import { splitMp3IntoSegments } from '@/utils/split-audio.util'
-import { transcribeAudioElevenLabs } from '@/utils/transcribe-elevenlabs.util'
+
+ffmpeg.setFfmpegPath(ffmpegInstaller.path)
+ffmpeg.setFfprobePath(ffprobeInstaller.path)
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms))
-
-const audioFilesPath = path.resolve(__dirname, 'audios')
 
 export async function pushTranscriptionEvent(
 	jobId: string,
@@ -42,11 +48,13 @@ export async function runTranscriptionJob(
 	try {
 		const startTime = performance.now()
 
-		// Mark the job as RUNNING
-
 		await transcriptService.running(jobId)
 
-		// 1. DOWNLOAD AUDIO
+		const info = await ytdl.getInfo(url)
+		const title = info.videoDetails.title
+		const totalDuration = parseFloat(info.videoDetails.lengthSeconds)
+
+		await transcriptService.updateTitle(jobId, title)
 
 		await pushTranscriptionEvent(
 			jobId,
@@ -54,50 +62,19 @@ export async function runTranscriptionJob(
 			false,
 			broadcast
 		)
-
-		const { outputPath, title: downloadedVideoTitle } =
-			await downloadYoutubeAudio(url, audioFilesPath)
-
-		await transcriptService.updateTitle(jobId, downloadedVideoTitle)
-
-		await pushTranscriptionEvent(jobId, 'Ovoz yuklandi!', false, broadcast)
-
 		await delay(500)
 
-		// 2. SPLIT AUDIO
-
+		const segmentDuration = 150 // 2.5 minutes
+		const numSegments = Math.ceil(totalDuration / segmentDuration)
 		await pushTranscriptionEvent(
 			jobId,
-			'Ovoz taqsimlanmoqda',
-			false,
-			broadcast
-		)
-		const { segments, outputDir } = await splitMp3IntoSegments(
-			outputPath,
-			audioFilesPath
-		)
-
-		await pushTranscriptionEvent(
-			jobId,
-			`Ovoz ${segments.length}ga taqsimlandi!`,
+			`Ovoz ${numSegments}ga taqsimlanmoqda`,
 			false,
 			broadcast
 		)
 		await delay(500)
 
-		// 3. DELETE ORIGINAL
-
-		fs.unlink(outputPath, () => {})
-
-		await pushTranscriptionEvent(
-			jobId,
-			`Asl ovoz o'chirildi!`,
-			false,
-			broadcast
-		)
-		await delay(500)
-
-		// 4. TRANSCRIPTION
+		// TRANSCRIPTION
 
 		await pushTranscriptionEvent(
 			jobId,
@@ -105,33 +82,52 @@ export async function runTranscriptionJob(
 			false,
 			broadcast
 		)
+
 		const editedTexts: string[] = []
 		let i = 0
 
-		while (i < segments.length) {
-			const segmentName = segments[i]
-			const segmentPath = path.resolve(outputDir, `${segmentName}.mp3`)
-
-			const segmentCount = segments.length
+		while (i < numSegments) {
 			const segmentNumber = i + 1
+			const startTime = i * segmentDuration
+			const actualDuration = Math.min(
+				segmentDuration,
+				totalDuration - startTime
+			)
 
-			await delay(1000)
+			// Stream segment from YouTube
+
+			const segmentStream = ytdl(url, {
+				filter: 'audioonly',
+				begin: startTime
+			})
+			const ffmpegStream = ffmpeg(segmentStream)
+				.inputOptions([`-ss ${startTime}`]) // Explicit seek
+				.outputOptions([
+					`-t ${actualDuration}`,
+					'-c:a libmp3lame', // Force MP3 encoding
+					'-q:a 2' // Audio quality (0-9)
+				])
+				.format('mp3')
+				.on('error', err => logger.error('FFmpeg error:', err))
+				.pipe()
+
+			const destFileName = `segment_${jobId}_${i}.mp3`
+			const gcsUri = await uploadStreamToGCS(ffmpegStream, destFileName)
+
+			await pushTranscriptionEvent(
+				jobId,
+				`Google matnni o'girmoqda ${segmentNumber}/${numSegments}`,
+				false,
+				broadcast
+			)
+
 			try {
-				await pushTranscriptionEvent(
-					jobId,
-					`Matn ${segmentNumber}/${segmentCount}`,
-					false,
-					broadcast
-				)
-
-				// google STT
-				const gcsUri = await uploadAudioToGCS(segmentPath)
 				const transcriptGoogle = await transcribeWithGoogle(gcsUri)
 
 				if (!transcriptGoogle) {
 					await pushTranscriptionEvent(
 						jobId,
-						`${segmentNumber}/${segmentCount}da xato!`,
+						`${segmentNumber}/${numSegments}-chi google matnida xatolik yuz berdi!`,
 						false,
 						broadcast
 					)
@@ -140,29 +136,32 @@ export async function runTranscriptionJob(
 
 					await pushTranscriptionEvent(
 						jobId,
-						`Matn ${segmentNumber}/${segmentCount}`,
+						`Qaytadan google matnni o'girmoqda ${segmentNumber}/${numSegments}!`,
 						false,
 						broadcast
 					)
 					continue
 				}
 
+				// elevenlabs STT
+
+				const segmentStreamForElevenLabs =
+					await getGCSFileStream(gcsUri)
+				const transcriptElevenLabs = await transcribeAudioElevenLabs(
+					segmentStreamForElevenLabs
+				)
+
 				await pushTranscriptionEvent(
 					jobId,
-					`Matn ${segmentNumber}/${segmentCount}`,
+					`Elevenlabs matnni o'girmoqda ${segmentNumber}/${numSegments}`,
 					false,
 					broadcast
 				)
 
-				// elevenlabs STT
-
-				const transcriptElevenLabs =
-					await transcribeAudioElevenLabs(segmentPath)
-
 				if (!transcriptElevenLabs) {
 					await pushTranscriptionEvent(
 						jobId,
-						`${segmentNumber}/${segmentCount}da xato!`,
+						`${segmentNumber}/${numSegments}-chi elevenlabs matnida xatolik yuz berdi!`,
 						false,
 						broadcast
 					)
@@ -171,7 +170,7 @@ export async function runTranscriptionJob(
 
 					await pushTranscriptionEvent(
 						jobId,
-						`${segmentNumber}/${segmentCount}da takror!`,
+						`Qaytadan elevenlabs matnni o'girmoqda ${segmentNumber}/${numSegments}!`,
 						false,
 						broadcast
 					)
@@ -180,7 +179,7 @@ export async function runTranscriptionJob(
 
 				await pushTranscriptionEvent(
 					jobId,
-					`Matn tahriri ${segmentNumber}/${segmentCount}`,
+					`Matnni Gemini tahrirlamoqda ${segmentNumber}/${numSegments}!`,
 					false,
 					broadcast
 				)
@@ -192,27 +191,18 @@ export async function runTranscriptionJob(
 				if (finalText) {
 					editedTexts.push(finalText)
 
-					fs.unlink(segmentPath, () => {})
-
 					await pushTranscriptionEvent(
 						jobId,
-						`Ovozni o'chirish ${segmentNumber}/${segmentCount}`,
+						`Ovoz o'chirilmoqda ${segmentNumber}/${numSegments}!`,
 						false,
 						broadcast
 					)
 
 					await delay(500)
-
-					await pushTranscriptionEvent(
-						jobId,
-						`Tahrir ${segmentNumber}/${segmentCount}`,
-						false,
-						broadcast
-					)
 				} else {
 					await pushTranscriptionEvent(
 						jobId,
-						`Qayta tahrir ${segmentNumber}/${segmentCount}!`,
+						`Qaytadan Gemini tahrir qilmoqda ${segmentNumber}/${numSegments}!`,
 						false,
 						broadcast
 					)
@@ -226,11 +216,17 @@ export async function runTranscriptionJob(
 				await transcriptService.error(jobId)
 
 				continue
+			} finally {
+				try {
+					await deleteGCSFile(gcsUri)
+				} catch (deleteErr) {
+					logger.error('Failed to delete segment:', deleteErr)
+				}
 			}
 
 			await pushTranscriptionEvent(
 				jobId,
-				`Matn tayyor ${segmentNumber}/${segmentCount}!`,
+				`${segmentNumber}/${numSegments}-chi matn tayyor!`,
 				false,
 				broadcast
 			)
@@ -239,6 +235,7 @@ export async function runTranscriptionJob(
 		}
 
 		// Mark session complete (assuming each session has a single job to do)
+
 		try {
 			await userSession.completed(sessionId)
 		} catch (err) {
@@ -263,7 +260,7 @@ export async function runTranscriptionJob(
 
 		await delay(500)
 
-		const finalTranscript = `<i style="display: block; font-style: italic; text-align: center;">🕒Arginalni yozib chiqish uchun: ${formatDuration(duration)} vaqt ketdi!</i><h1 style="font-weight: 700; font-size: 1.8rem; margin: 1rem 0; text-align: center; line-height: 1;">${downloadedVideoTitle}</h1>\n\n<p style="text-indent: 30px;">${convertToUzbekLatin(combinedResult)}</p>`
+		const finalTranscript = `<i style="display: block; font-style: italic; text-align: center;">🕒Arginalni yozib chiqish uchun: ${formatDuration(duration)} vaqt ketdi!</i><h1 style="font-weight: 700; font-size: 1.8rem; margin: 1rem 0; text-align: center; line-height: 1;">${title}</h1>\n\n<p style="text-indent: 30px;">${convertToUzbekLatin(combinedResult)}</p>`
 
 		await transcriptService.saveFinalTranscript(jobId, finalTranscript)
 

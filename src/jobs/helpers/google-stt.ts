@@ -1,7 +1,9 @@
 import { v2 as speechV2 } from '@google-cloud/speech'
 import { Storage } from '@google-cloud/storage'
 import 'dotenv/config'
-import path from 'path'
+import { PassThrough, Readable, Writable } from 'stream'
+
+import { logger } from '@/lib/logger'
 
 const PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT_ID
 const BUCKET_NAME = process.env.GOOGLE_CLOUD_BUCKET_NAME
@@ -13,29 +15,48 @@ if (PRIVATE_KEY) {
 	PRIVATE_KEY = PRIVATE_KEY.replace(/\\n/g, '\n')
 }
 
-export async function uploadAudioToGCS(
-	localFilePath: string,
-	destFileName?: string
-): Promise<string> {
-	const storage = new Storage({
-		projectId: PROJECT_ID,
-		credentials: {
-			client_email: CLIENT_EMAIL,
-			private_key: PRIVATE_KEY
-		}
-	})
-
-	if (!destFileName) {
-		destFileName = path.basename(localFilePath)
+const storage = new Storage({
+	projectId: PROJECT_ID,
+	credentials: {
+		client_email: CLIENT_EMAIL,
+		private_key: PRIVATE_KEY
 	}
+})
 
-	await storage.bucket(BUCKET_NAME).upload(localFilePath, {
-		destination: destFileName
+export async function uploadStreamToGCS(
+	stream: Writable | PassThrough,
+	destFileName: string
+): Promise<string> {
+	const bucket = storage.bucket(BUCKET_NAME)
+	const file = bucket.file(destFileName)
+	await new Promise((resolve, reject) => {
+		stream
+			.pipe(file.createWriteStream())
+			.on('finish', resolve)
+			.on('error', reject)
 	})
+	return `gs://${BUCKET_NAME}/${destFileName}`
+}
 
-	const gcsUri = `gs://${BUCKET_NAME}/${destFileName}`
+export async function getGCSFileStream(gcsUri: string): Promise<Readable> {
+	const [bucketName, fileName] = gcsUri.replace('gs://', '').split('/', 2)
+	const bucket = storage.bucket(bucketName)
+	const file = bucket.file(fileName)
+	return file.createReadStream()
+}
 
-	return gcsUri
+export async function deleteGCSFile(gcsUri: string): Promise<void> {
+	try {
+		const [bucketName, fileName] = gcsUri.replace('gs://', '').split('/', 2)
+		const bucket = storage.bucket(bucketName)
+		const file = bucket.file(fileName)
+
+		await file.delete()
+		logger.info(`Successfully deleted GCS file: ${gcsUri}`)
+	} catch (err) {
+		logger.error(`Failed to delete GCS file ${gcsUri}:`, err)
+		throw err
+	}
 }
 
 export async function transcribeWithGoogle(audioUri: string) {

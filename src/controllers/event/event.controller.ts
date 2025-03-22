@@ -9,7 +9,6 @@ const router = Router()
 
 const prisma = new PrismaClient()
 
-// Map of jobId => array of SSE connections (Response objects)
 const jobConnections = new Map<string, Response[]>()
 
 router.get(
