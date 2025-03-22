@@ -60,3 +60,5 @@ main()
 		await prisma.$disconnect()
 		process.exit(1)
 	})
+
+export default app
