@@ -3,6 +3,7 @@ import cookieParser from 'cookie-parser'
 import cors from 'cors'
 import * as dotenv from 'dotenv'
 import express, { Request, Response } from 'express'
+import 'module-alias/register'
 
 import {
 	authController,
@@ -35,7 +36,7 @@ async function main() {
 	app.use('/api/users', userController)
 	app.use('/api/sessions', sessionController)
 	app.use('/api/events', eventController)
-	app.use('/api', transcriptController)
+	app.use('/api/transcripts', transcriptController)
 
 	app.all('*', (req: Request, res: Response) => {
 		res.status(404).json({ message: `Route ${req.originalUrl} Not Found` })

@@ -6,8 +6,6 @@ import fs from 'fs'
 import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
 
-import { logger } from '@/lib/logger'
-
 ffmpeg.setFfmpegPath(ffmpegInstaller.path)
 ffmpeg.setFfprobePath(ffprobeInstaller.path)
 
@@ -19,7 +17,7 @@ export async function downloadYoutubeAudio(
 
 	try {
 		const info = await ytdl.getInfo(url)
-		const title = info.videoDetails.title
+		const title = info.videoDetails.title || 'Unknown Title'
 
 		if (!fs.existsSync(baseOutputPath)) {
 			fs.mkdirSync(baseOutputPath, { recursive: true })
@@ -31,27 +29,24 @@ export async function downloadYoutubeAudio(
 			const audioStream = ytdl(url, {
 				filter: 'audioonly',
 				quality: 'highestaudio',
-				highWaterMark: 1 << 25
+				highWaterMark: 1 << 25 // 32 MB buffer
 			})
 
 			audioStream.on('error', err => {
-				logger.error('ytdl error:', err)
 				reject(err)
 			})
 
 			ffmpeg(audioStream)
 				.audioBitrate(128)
-				.toFormat('mp3')
-				.output(outputPath)
+				.format('mp3')
 
+				.on('error', err => {
+					reject(err)
+				})
 				.on('end', () => {
 					resolve()
 				})
-				.on('error', err => {
-					logger.error('FFmpeg error:', err)
-					reject(err)
-				})
-				.run()
+				.save(outputPath)
 		})
 
 		return { outputPath, title }

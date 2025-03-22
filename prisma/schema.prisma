@@ -22,24 +22,47 @@ model User {
 }
 
 model UserSession {
-  id        String   @id @default(uuid())
-  events    Event[]
-  completed Boolean  @default(false)
-  user      User?    @relation(fields: [userId], references: [id])
-  userId    String?  @map("user_id")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+  id                String             @id @default(uuid())
+  completed         Boolean            @default(false)
+  user              User?              @relation(fields: [userId], references: [id])
+  userId            String?            @map("user_id")
+  transcriptionJobs TranscriptionJob[]
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @default(now()) @updatedAt @map("updated_at")
 
   @@map("user_sessions")
 }
 
-model Event {
-  id        String      @id @default(uuid())
-  content   String
-  sessionId String
-  session   UserSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  createdAt DateTime    @default(now()) @map("created_at")
-  updatedAt DateTime    @default(now()) @updatedAt @map("updated_at")
+model TranscriptionJob {
+  id              String                 @id @default(uuid())
+  url             String                 @unique
+  status          TranscriptionJobStatus @default(PENDING)
+  downloadedTitle String?
+  finalTranscript String?
+  events          TranscriptionEvent[]
+  session         UserSession?           @relation(fields: [sessionId], references: [id])
+  sessionId       String?                @map("session_id")
+  createdAt       DateTime               @default(now()) @map("created_at")
+  updatedAt       DateTime               @default(now()) @updatedAt @map("updated_at")
 
-  @@map("events")
+  @@map("transcription_jobs")
+}
+
+model TranscriptionEvent {
+  id        String           @id @default(uuid())
+  jobId     String
+  job       TranscriptionJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  content   String
+  completed Boolean          @default(false)
+  createdAt DateTime         @default(now()) @map("created_at")
+  updatedAt DateTime         @default(now()) @updatedAt @map("updated_at")
+
+  @@map("transcription_events")
+}
+
+enum TranscriptionJobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  ERROR
 }

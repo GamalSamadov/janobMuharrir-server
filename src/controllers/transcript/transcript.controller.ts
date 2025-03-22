@@ -1,26 +1,49 @@
 import { Request, Response, Router } from 'express'
-import { body, validationResult } from 'express-validator'
 
-import { TranscriptDto } from '@/dto/transcript.dto'
 import { authenticate } from '@/middlewares/auth.middleware'
+import { transcriptService } from '@/services/transcript/transcript.service'
 
 const router = Router()
 
-router.post(
+router.get(
 	'/',
-	body('url').isURL(),
 	authenticate,
 	async (req: Request, res: Response): Promise<void> => {
-		const errors = validationResult(req)
+		try {
+			const transcripts = await transcriptService.getAll()
 
-		if (!errors.isEmpty()) {
-			res.status(400).json({ errors: errors.array() })
+			if (!transcripts) {
+				res.status(404).json({ message: 'Transcripts not found' })
+				return
+			}
+
+			res.status(200).json(transcripts)
+		} catch (error) {
+			res.status(400).json({ message: error.message })
 			return
 		}
+	}
+)
 
-		const dto: TranscriptDto = req.body
+router.delete(
+	'/:id',
+	authenticate,
+	async (req: Request, res: Response): Promise<void> => {
+		try {
+			const { id } = req.params
 
-		res.status(200).json(dto)
+			const transcript = await transcriptService.delete(id)
+
+			if (!transcript) {
+				res.status(404).json({ message: 'Transcript not found' })
+				return
+			}
+
+			res.status(200).json(transcript)
+		} catch (error) {
+			res.status(400).json({ message: error.message })
+			return
+		}
 	}
 )
 

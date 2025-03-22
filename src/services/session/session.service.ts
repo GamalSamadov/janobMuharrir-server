@@ -2,7 +2,7 @@ import { PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
 
-export class SessionService {
+class SessionService {
 	public async create(userId: string): Promise<string> {
 		const session = await prisma.userSession.create({
 			data: {
@@ -26,3 +26,5 @@ export class SessionService {
 		return true
 	}
 }
+
+export const userSession = new SessionService()

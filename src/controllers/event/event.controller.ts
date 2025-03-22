@@ -1,408 +1,159 @@
+import { PrismaClient, TranscriptionJobStatus } from '@prisma/client'
 import { Request, Response, Router } from 'express'
-import fs from 'fs'
-import path from 'path'
 
+import { runTranscriptionJob } from '@/jobs/transcribe.job'
 import { logger } from '@/lib/logger'
 import { authenticate } from '@/middlewares/auth.middleware'
-import { EventService } from '@/services/event/event.service'
-import { SessionService } from '@/services/session/session.service'
-import { convertToUzbekLatin } from '@/utils/cryllic-to-latin.util'
-import { downloadYoutubeAudio } from '@/utils/download-audio.util'
-import { editTranscribed } from '@/utils/edit-transcribed .util'
-import { formatDuration } from '@/utils/format-duration.util'
-import { transcribeWithGoogle, uploadAudioToGCS } from '@/utils/google-stt.util'
-import { splitMp3IntoSegments } from '@/utils/split-audio.util'
-import { transcribeAudioElevenLabs } from '@/utils/transcribe-elevenlabs.util'
 
 const router = Router()
 
-const eventService = new EventService()
-const userSession = new SessionService()
+const prisma = new PrismaClient()
 
-const audioFilesPath = path.resolve(__dirname, 'audios')
-const transcriptsPath = path.resolve(__dirname, 'transcripts')
+// Map of jobId => array of SSE connections (Response objects)
+const jobConnections = new Map<string, Response[]>()
 
 router.get(
 	'/:sessionId/find-all',
 	authenticate,
 	async (req: Request, res: Response) => {
-		const events = await eventService.findMany(req.params.sessionId)
-		res.json(events)
-	}
-)
-
-router.get(
-	'/:sessionId',
-
-	async (req: Request, res: Response) => {
-		const { sessionId } = req.params
-		const { url: orgUrl } = req.query
-		const url = orgUrl as string
-
-		if (!url) {
-			res.status(400).json({ message: 'URL is required!' })
-			return
-		}
-
 		try {
-			let event
-			const startTime = performance.now()
+			const { sessionId } = req.params
 
-			res.writeHead(200, {
-				'Content-Type': 'text/event-stream',
-				Connection: 'keep-alive',
-				'Cache-Control': 'no-cache'
+			const existingSession = await prisma.userSession.findUnique({
+				where: { id: sessionId }
 			})
-
-			// DOWNLOAD AUDIO
-
-			event = await eventService.create(
-				`(Youtube)dan video ovoz shaklida yuklanmoqda...`,
-				sessionId
-			)
-			res.write(
-				`data: ${JSON.stringify({
-					event: event.content,
-					createdAt: event.createdAt
-				})}\n\n`
-			)
-
-			const { outputPath, title: downloadedVideoTitle } =
-				await downloadYoutubeAudio(url, audioFilesPath)
-
-			event = await eventService.create(`Ovoz yuklandi!`, sessionId)
-			res.write(
-				`data: ${JSON.stringify({
-					event: event.content,
-					createdAt: event.createdAt
-				})}\n\n`
-			)
-
-			await new Promise(resolve => setTimeout(resolve, 500))
-
-			// SPLIT AUDIO INTO SEGMENTS
-
-			event = await eventService.create(
-				`Ovoz qismlarga taqsimlanmoqda...`,
-				sessionId
-			)
-			res.write(
-				`data: ${JSON.stringify({
-					event: event.content,
-					createdAt: event.createdAt
-				})}\n\n`
-			)
-
-			const { segments, outputDir } = await splitMp3IntoSegments(
-				outputPath,
-				audioFilesPath
-			)
-
-			event = await eventService.create(
-				`Ovoz ${segments.length} qismga taqsimlandi!`,
-				sessionId
-			)
-			res.write(
-				`data: ${JSON.stringify({
-					event: event.content,
-					createdAt: event.createdAt
-				})}\n\n`
-			)
-
-			await new Promise(resolve => setTimeout(resolve, 500))
-
-			// DELETE ORIGINAL AUDIO
-
-			await fs.unlink(outputPath, async () => {
-				event = await eventService.create(
-					`Asl ovoz o'chirildi!`,
-					sessionId
-				)
-				res.write(
-					`data: ${JSON.stringify({
-						event: event.content,
-						createdAt: event.createdAt
-					})}\n\n`
-				)
-			})
-
-			await new Promise(resolve => setTimeout(resolve, 500))
-
-			// TRANSCRIPTION
-
-			event = await eventService.create(
-				`Ovoz textga o'g'rilmoqda...`,
-				sessionId
-			)
-			res.write(
-				`data: ${JSON.stringify({
-					event: event.content,
-					createdAt: event.createdAt
-				})}\n\n`
-			)
-
-			let i = 0
-
-			const editedTexts = []
-
-			while (i < segments.length) {
-				const segmentName = segments[i]
-
-				const segmentPath = path.resolve(
-					outputDir,
-					`${segmentName}.mp3`
-				)
-
-				await new Promise(resolve => setTimeout(resolve, 1000))
-
-				try {
-					event = await eventService.create(
-						`Ovoz textga o'g'rilmoqda ${i}/${segments.length - 1}...`,
-						sessionId
-					)
-					res.write(
-						`data: ${JSON.stringify({
-							event: event.content,
-							createdAt: event.createdAt
-						})}\n\n`
-					)
-
-					// google STT
-					const gcsUri = await uploadAudioToGCS(segmentPath)
-					const transcriptGoogle = await transcribeWithGoogle(gcsUri)
-
-					if (!transcriptGoogle) {
-						event = await eventService.create(
-							`Xatolik ro'yberdi ${i}/${segments.length - 1}!!!`,
-							sessionId
-						)
-
-						res.write(
-							`data: ${JSON.stringify({
-								event: event.content,
-								createdAt: event.createdAt
-							})}\n\n`
-						)
-
-						await new Promise(resolve => setTimeout(resolve, 500))
-
-						event = await eventService.create(
-							`Qayta qilinmoqda ${i}/${segments.length - 1}!!!`,
-							sessionId
-						)
-
-						res.write(
-							`data: ${JSON.stringify({
-								event: event.content,
-								createdAt: event.createdAt
-							})}\n\n`
-						)
-						continue
-					}
-
-					// create Google text file
-					// fs.writeFileSync(
-					// 	path.join(transcriptsPath, `${segmentName}-google.txt`),
-					// 	transcriptGoogle
-					// )
-
-					event = await eventService.create(
-						`Ovoz textga o'g'rilmoqda ${i}/${segments.length - 1}...`,
-						sessionId
-					)
-					res.write(
-						`data: ${JSON.stringify({
-							event: event.content,
-							createdAt: event.createdAt
-						})}\n\n`
-					)
-
-					// elevenlabs STT
-					const transcriptElevenLabs =
-						await transcribeAudioElevenLabs(segmentPath)
-
-					if (!transcriptElevenLabs) {
-						event = await eventService.create(
-							`Xatolik ro'yberdi ${i}/${segments.length - 1}!!!`,
-							sessionId
-						)
-
-						res.write(
-							`data: ${JSON.stringify({
-								event: event.content,
-								createdAt: event.createdAt
-							})}\n\n`
-						)
-
-						await new Promise(resolve => setTimeout(resolve, 500))
-
-						event = await eventService.create(
-							`Qayta qilinmoqda ${i}/${segments.length - 1}!!!`,
-							sessionId
-						)
-
-						res.write(
-							`data: ${JSON.stringify({
-								event: event.content,
-								createdAt: event.createdAt
-							})}\n\n`
-						)
-						continue
-					}
-
-					// fs.writeFileSync(
-					// 	path.join(transcriptsPath, `${segmentName}-elevenlabs.txt`),
-					// 	transcriptElevenLabs
-					// )
-
-					event = await eventService.create(
-						`Text tahrirlanmoqda ${i}/${segments.length - 1}...`,
-						sessionId
-					)
-					res.write(
-						`data: ${JSON.stringify({
-							event: event.content,
-							createdAt: event.createdAt
-						})}\n\n`
-					)
-
-					const finalText = await editTranscribed(
-						transcriptGoogle,
-						transcriptElevenLabs
-					)
-
-					if (finalText) {
-						editedTexts.push(finalText)
-
-						// create final edited text
-						// fs.writeFileSync(
-						// 	path.join(transcriptsPath, `${segmentName}-edited.txt`),
-						// 	finalText
-						// )
-
-						await fs.unlink(segmentPath, async () => {
-							event = await eventService.create(
-								`Ovoz o'chirilmoqda ${i}/${segments.length - 1}...`,
-								sessionId
-							)
-							res.write(
-								`data: ${JSON.stringify({
-									event: event.content,
-									createdAt: event.createdAt
-								})}\n\n`
-							)
-						})
-
-						await new Promise(resolve => setTimeout(resolve, 500))
-
-						event = await eventService.create(
-							`Text tahrirlandi ${i}/${segments.length - 1}...`,
-							sessionId
-						)
-						res.write(
-							`data: ${JSON.stringify({
-								event: event.content,
-								createdAt: event.createdAt
-							})}\n\n`
-						)
-					} else {
-						event = await eventService.create(
-							`Tahrirda xatolik ro'y berdi, qayta tahrir qilinmoqda ${i}/${segments.length - 1}...`,
-							sessionId
-						)
-						res.write(
-							`data: ${JSON.stringify({
-								event: event.content,
-								createdAt: event.createdAt
-							})}\n\n`
-						)
-
-						await new Promise(resolve => setTimeout(resolve, 500))
-
-						continue
-					}
-				} catch (error) {
-					console.error(error)
-					continue
-				}
-
-				event = await eventService.create(
-					`Text tayyor ${i}/${segments.length - 1}!`,
-					sessionId
-				)
-				res.write(
-					`data: ${JSON.stringify({
-						event: event.content,
-						createdAt: event.createdAt
-					})}\n\n`
-				)
-
-				await new Promise(resolve => setTimeout(resolve, 500))
-				i++
+			if (!existingSession) {
+				res.status(404).json({ message: 'Session not found!' })
+				return
 			}
 
-			await userSession.completed(sessionId)
-
-			event = await eventService.create(`Text tayyor bo'ldi!`, sessionId)
-			res.write(
-				`data: ${JSON.stringify({
-					complated: true,
-					data: {
-						event: event.content,
-						createdAt: event.createdAt
+			const events = await prisma.transcriptionEvent.findMany({
+				where: {
+					job: {
+						session: {
+							id: sessionId
+						}
 					}
-				})}\n\n`
-			)
-
-			await new Promise(resolve => setTimeout(resolve, 500))
-
-			const result = editedTexts
-				.join('\n\n')
-				.replace(/\(\(\((.*?)\)\)\)/g, '$1')
-			const duration = performance.now() - startTime
-			const { name: videoName } = path.parse(outputPath)
-
-			fs.writeFileSync(
-				path.join(transcriptsPath, `${videoName}-final-transcript.txt`),
-				`🕒 Arginalni yozib chiqish uchun: ${formatDuration(
-					duration
-				)} vaqt ketdi!\n\n${downloadedVideoTitle}\n\n${convertToUzbekLatin(
-					result
-				)}`
-			)
-
-			event = await eventService.create(`Text jamlandi!`, sessionId)
-			res.write(
-				`data: ${JSON.stringify({
-					event: event.content,
-					createdAt: event.createdAt
-				})}\n\n`
-			)
-
-			await new Promise(resolve => setTimeout(resolve, 500))
-
-			const finalTranscript = `🕒 Arginalni yozib chiqish uchun: ${formatDuration(
-				duration
-			)} vaqt ketdi!\n\n${downloadedVideoTitle}\n\n${convertToUzbekLatin(
-				result
-			)}`
-
-			event = await eventService.create(finalTranscript, sessionId)
-			res.write(
-				`data: ${JSON.stringify({
-					event: event.content,
-					createdAt: event.createdAt
-				})}\n\n`
-			)
-
-			req.on('close', () => {
-				console.log(`Connection closed for session ${sessionId}`)
+				},
+				orderBy: { createdAt: 'asc' }
 			})
-		} catch (error) {
+
+			res.json(events)
+		} catch (error: any) {
 			logger.error(error)
 			res.status(500).json({ message: error.message })
 		}
 	}
 )
+
+router.get('/:sessionId', async (req: Request, res: Response) => {
+	const { sessionId } = req.params
+	const { url } = req.query as { url: string }
+
+	if (!url) {
+		res.status(400).json({ message: 'URL is required!' })
+		return
+	}
+
+	try {
+		// 1. Check that the session actually exists
+		const existingSession = await prisma.userSession.findUnique({
+			where: { id: sessionId }
+		})
+		if (!existingSession) {
+			res.status(404).json({ message: 'Session not found!' })
+			return
+		}
+
+		// 2. Find or create a TranscriptionJob in the DB
+		let job = await prisma.transcriptionJob.findFirst({
+			where: {
+				session: {
+					id: sessionId
+				},
+				url
+			}
+		})
+
+		if (!job) {
+			// Create a brand new job
+			job = await prisma.transcriptionJob.create({
+				data: {
+					url,
+					status: TranscriptionJobStatus.PENDING,
+					session: {
+						connect: { id: sessionId }
+					}
+				}
+			})
+
+			// Kick off background process
+			void runTranscriptionJob(
+				job.id,
+				sessionId,
+				url,
+				// This broadcast function is how the worker can push SSE updates
+				async (content, completed) => {
+					const connections = jobConnections.get(job!.id) || []
+					if (connections.length) {
+						// Write SSE data to all connected clients
+						const payload = {
+							content,
+							completed,
+							createdAt: new Date().toISOString()
+						}
+						connections.forEach(resp => {
+							resp.write(`data: ${JSON.stringify(payload)}\n\n`)
+						})
+					}
+				}
+			).catch(err => {
+				console.error('Transcription job error:', err)
+			})
+		}
+
+		// 3. Setup SSE response
+		res.writeHead(200, {
+			'Content-Type': 'text/event-stream',
+			'Cache-Control': 'no-cache',
+			Connection: 'keep-alive'
+		})
+
+		// Add this res to the jobConnections
+		if (!jobConnections.has(job.id)) {
+			jobConnections.set(job.id, [])
+		}
+		jobConnections.get(job.id)?.push(res)
+
+		// 4. Send any previously stored events so the user can see the history
+		const existingEvents = await prisma.transcriptionEvent.findMany({
+			where: { jobId: job.id },
+			orderBy: { createdAt: 'asc' }
+		})
+
+		for (const evt of existingEvents) {
+			const payload = {
+				content: evt.content,
+				completed: evt.completed,
+				createdAt: evt.createdAt
+			}
+			res.write(`data: ${JSON.stringify(payload)}\n\n`)
+		}
+
+		// 5. Keep connection open and handle disconnect
+		req.on('close', () => {
+			const list = jobConnections.get(job!.id)
+			if (list) {
+				jobConnections.set(
+					job!.id,
+					list.filter(r => r !== res)
+				)
+			}
+		})
+	} catch (error) {
+		logger.error(error)
+		res.status(500).json({ message: error.message })
+	}
+})
 
 export { router as eventController }

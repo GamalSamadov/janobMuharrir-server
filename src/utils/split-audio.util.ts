@@ -86,9 +86,6 @@ export function splitMp3IntoSegments(
 						new Error(`FFmpeg processing error: ${error.message}`)
 					)
 				})
-				.on('stderr', stderrLine => {
-					logger.error('FFmpeg stderr:', stderrLine)
-				})
 				.run()
 		} catch (error) {
 			reject(error instanceof Error ? error : new Error(String(error)))
