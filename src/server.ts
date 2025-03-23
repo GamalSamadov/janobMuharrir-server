@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client'
 import cookieParser from 'cookie-parser'
-import cors from 'cors'
+// import cors from 'cors'
 import * as dotenv from 'dotenv'
 import express, { Request, Response } from 'express'
 import 'module-alias/register'
@@ -23,25 +23,13 @@ const app = express()
 app.use(express.json())
 app.use(cookieParser())
 
-logger.info(
-	`Allowed CORS origins: ${[process.env.CLIENT_URL, 'http://localhost:3000']}`
-)
-
-app.use(
-	cors({
-		origin: [process.env.CLIENT_URL, 'http://localhost:3000'],
-		credentials: true,
-		exposedHeaders: ['Set-Cookie']
-	})
-)
-
-// Add logging for incoming requests
-app.use((req, res, next) => {
-	logger.info(
-		`Received ${req.method} request to ${req.originalUrl} from ${req.headers.origin}`
-	)
-	next()
-})
+// app.use(
+// 	cors({
+// 		origin: [process.env.CLIENT_URL, 'http://localhost:3000'],
+// 		credentials: true,
+// 		exposedHeaders: ['Set-Cookie']
+// 	})
+// )
 
 async function main() {
 	app.use('/api/auth', authController)
