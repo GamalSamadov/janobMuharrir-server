@@ -12,4 +12,4 @@ router.get('/start', authenticate, async (req: Request, res: Response) => {
 	res.json({ sessionId: sessionId })
 })
 
-export { router as sessionController }
+export default router

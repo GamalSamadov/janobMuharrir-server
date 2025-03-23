@@ -91,4 +91,4 @@ router.post('/logout', async (req: Request, res: Response): Promise<void> => {
 	}
 })
 
-export { router as authController }
+export default router

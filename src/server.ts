@@ -44,25 +44,20 @@ app.all('*', (req: Request, res: Response) => {
 	res.status(404).json({ message: `Route ${req.originalUrl} Not Found` })
 })
 
-async function connectToDatabase() {
+async function run() {
 	try {
 		await prisma.$connect()
 		logger.info('Connected to database')
+		const port = process.env.PORT || 4200
+		app.listen(port, () => {
+			logger.info(`Server is running on: http://localhost:${port}`)
+		})
 	} catch (e) {
-		logger.error(`Failed to connect to database: ${e}`)
-		await prisma.$disconnect()
+		logger.error(`Failed to connect to database ${e}`)
 		process.exit(1)
 	}
 }
 
-// Connect to database in all environments
-connectToDatabase()
-
-if (!process.env.VERCEL) {
-	const port = process.env.PORT || 4200
-	app.listen(port, () => {
-		logger.info(`Server running on http://localhost:${port}`)
-	})
-}
+run()
 
 export default app

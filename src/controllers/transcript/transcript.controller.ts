@@ -47,4 +47,4 @@ router.delete(
 	}
 )
 
-export { router as transcriptController }
+export default router

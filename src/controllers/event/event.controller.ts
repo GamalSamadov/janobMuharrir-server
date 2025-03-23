@@ -155,4 +155,4 @@ router.get('/:sessionId', async (req: Request, res: Response) => {
 	}
 })
 
-export { router as eventController }
+export default router
