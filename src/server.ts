@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client'
 import cookieParser from 'cookie-parser'
-// import cors from 'cors'
+import cors from 'cors'
 import * as dotenv from 'dotenv'
 import express, { Request, Response } from 'express'
 import 'module-alias/register'
@@ -23,13 +23,13 @@ const app = express()
 app.use(express.json())
 app.use(cookieParser())
 
-// app.use(
-// 	cors({
-// 		origin: [process.env.CLIENT_URL, 'http://localhost:3000'],
-// 		credentials: true,
-// 		exposedHeaders: ['Set-Cookie']
-// 	})
-// )
+app.use(
+	cors({
+		origin: [process.env.CLIENT_URL, 'http://localhost:3000'],
+		credentials: true,
+		exposedHeaders: ['Set-Cookie']
+	})
+)
 
 async function main() {
 	app.get('/test', (req: Request, res: Response) => {
