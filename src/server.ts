@@ -31,37 +31,38 @@ app.use(
 	})
 )
 
-async function main() {
-	app.get('/test', (req: Request, res: Response) => {
-		res.json({ message: 'Hello World' }).status(200)
-	})
-	app.use('/api/auth', authController)
-	app.use('/api/users', userController)
-	app.use('/api/sessions', sessionController)
-	app.use('/api/events', eventController)
-	app.use('/api/transcripts', transcriptController)
+app.get('/test', (req: Request, res: Response) => {
+	res.json({ message: 'Hello World' }).status(200)
+})
+app.use('/api/auth', authController)
+app.use('/api/users', userController)
+app.use('/api/sessions', sessionController)
+app.use('/api/events', eventController)
+app.use('/api/transcripts', transcriptController)
 
-	app.all('*', (req: Request, res: Response) => {
-		res.status(404).json({ message: `Route ${req.originalUrl} Not Found` })
-	})
+app.all('*', (req: Request, res: Response) => {
+	res.status(404).json({ message: `Route ${req.originalUrl} Not Found` })
+})
 
-	const port = process.env.PORT || 4200
-
-	app.listen(port, () => {
-		logger.info(`Server is running on: http://localhost:${port}`)
-	})
-}
-
-main()
-	.then(async () => {
-		logger.info('Connected to database')
+async function connectToDatabase() {
+	try {
 		await prisma.$connect()
-	})
-	.catch(async e => {
-		logger.error(`Failed to connect to database ${e}`)
-		console.error(e)
+		logger.info('Connected to database')
+	} catch (e) {
+		logger.error(`Failed to connect to database: ${e}`)
 		await prisma.$disconnect()
 		process.exit(1)
+	}
+}
+
+// Connect to database in all environments
+connectToDatabase()
+
+if (!process.env.VERCEL) {
+	const port = process.env.PORT || 4200
+	app.listen(port, () => {
+		logger.info(`Server running on http://localhost:${port}`)
 	})
+}
 
 export default app
