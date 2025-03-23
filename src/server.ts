@@ -32,6 +32,9 @@ app.use(cookieParser())
 // )
 
 async function main() {
+	app.get('/test', (req: Request, res: Response) => {
+		res.json({ message: 'Hello World' }).status(200)
+	})
 	app.use('/api/auth', authController)
 	app.use('/api/users', userController)
 	app.use('/api/sessions', sessionController)
