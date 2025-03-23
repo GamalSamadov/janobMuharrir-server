@@ -1,6 +1,6 @@
 import { Response } from 'express'
 
-import { IS_PRODUCTION } from '@/constants'
+import { CLIENT_URL, IS_PRODUCTION } from '@/constants'
 
 class RefreshTokenService {
 	readonly EXPIRE_DAY_REFRESH_TOKEN = 30
@@ -12,7 +12,7 @@ class RefreshTokenService {
 
 		res.cookie(this.REFRESH_TOKEN_NAME, refreshToken, {
 			httpOnly: true,
-			domain: 'localhost',
+			domain: IS_PRODUCTION ? CLIENT_URL : 'localhost',
 			expires: expiresIn,
 			secure: IS_PRODUCTION,
 			sameSite: IS_PRODUCTION ? 'lax' : 'none'
@@ -22,7 +22,7 @@ class RefreshTokenService {
 	removeRefreshTokenResponse(res: Response) {
 		res.cookie(this.REFRESH_TOKEN_NAME, '', {
 			httpOnly: true,
-			domain: 'localhost',
+			domain: IS_PRODUCTION ? CLIENT_URL : 'localhost',
 			expires: new Date(0),
 			secure: IS_PRODUCTION,
 			sameSite: IS_PRODUCTION ? 'lax' : 'none'
