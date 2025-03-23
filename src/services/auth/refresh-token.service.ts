@@ -12,7 +12,9 @@ class RefreshTokenService {
 
 		res.cookie(this.REFRESH_TOKEN_NAME, refreshToken, {
 			httpOnly: true,
-			domain: IS_PRODUCTION ? CLIENT_URL : 'localhost',
+			domain: IS_PRODUCTION
+				? CLIENT_URL.replace('https://', '')
+				: 'localhost',
 			expires: expiresIn,
 			secure: IS_PRODUCTION,
 			sameSite: IS_PRODUCTION ? 'lax' : 'none'
@@ -22,7 +24,9 @@ class RefreshTokenService {
 	removeRefreshTokenResponse(res: Response) {
 		res.cookie(this.REFRESH_TOKEN_NAME, '', {
 			httpOnly: true,
-			domain: IS_PRODUCTION ? CLIENT_URL : 'localhost',
+			domain: IS_PRODUCTION
+				? CLIENT_URL.replace('https://', '')
+				: 'localhost',
 			expires: new Date(0),
 			secure: IS_PRODUCTION,
 			sameSite: IS_PRODUCTION ? 'lax' : 'none'
