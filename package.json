@@ -25,9 +25,6 @@
 	"homepage": "https://github.com/GamalSamadov/janobMuharrir-server#readme",
 	"dependencies": {
 		"@distube/ytdl-core": "^4.16.5",
-		"@ffmpeg-installer/ffmpeg": "^1.1.0",
-		"@ffprobe-installer/ffprobe": "^2.1.2",
-		"@ffprobe-installer/linux-x64": "^5.2.0",
 		"@google-cloud/speech": "^7.0.0",
 		"@google-cloud/storage": "^7.15.2",
 		"@google/generative-ai": "^0.24.0",

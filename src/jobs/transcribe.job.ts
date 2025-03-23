@@ -1,6 +1,6 @@
 import ytdl from '@distube/ytdl-core'
-import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
-import ffprobeInstaller from '@ffprobe-installer/ffprobe'
+// import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
+// import ffprobeInstaller from '@ffprobe-installer/ffprobe'
 import ffmpeg from 'fluent-ffmpeg'
 import { performance } from 'perf_hooks'
 
@@ -21,8 +21,8 @@ import {
 	transcriptService
 } from '@/services/transcript/transcript.service'
 
-ffmpeg.setFfmpegPath(ffmpegInstaller.path)
-ffmpeg.setFfprobePath(ffprobeInstaller.path)
+// ffmpeg.setFfmpegPath(ffmpegInstaller.path)
+// ffmpeg.setFfprobePath(ffprobeInstaller.path)
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms))
 
