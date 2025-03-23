@@ -3,6 +3,7 @@ import cookieParser from 'cookie-parser'
 import cors from 'cors'
 import * as dotenv from 'dotenv'
 import express, { Request, Response } from 'express'
+import 'module-alias/register'
 
 import {
 	authController,
