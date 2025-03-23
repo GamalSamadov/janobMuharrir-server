@@ -20,18 +20,18 @@ export const prisma = new PrismaClient()
 
 const app = express()
 
+app.use(express.json())
+app.use(cookieParser())
+
+app.use(
+	cors({
+		origin: [process.env.CLIENT_URL, 'http://localhost:3000'],
+		credentials: true,
+		exposedHeaders: ['Set-Cookie']
+	})
+)
+
 async function main() {
-	app.use(express.json())
-	app.use(cookieParser())
-
-	app.use(
-		cors({
-			origin: [process.env.CLIENT_URL, 'http://localhost:3000'],
-			credentials: true,
-			exposedHeaders: ['Set-Cookie']
-		})
-	)
-
 	app.use('/api/auth', authController)
 	app.use('/api/users', userController)
 	app.use('/api/sessions', sessionController)
