@@ -2,10 +2,9 @@ import { Request, Response, Router } from 'express'
 import { body, validationResult } from 'express-validator'
 
 import { AuthDto } from '@/dto/auth.dto'
-import { authService, RefreshTokenService } from '@/services/auth'
+import { authService, refreshTokenService } from '@/services/auth'
 
 const router = Router()
-const refreshTokenService = new RefreshTokenService()
 
 router.post(
 	'/login',
