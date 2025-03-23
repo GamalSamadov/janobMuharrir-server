@@ -1,13 +1,11 @@
-import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
-import ffprobeInstaller from '@ffprobe-installer/ffprobe'
+// import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
+// import ffprobeInstaller from '@ffprobe-installer/ffprobe'
 import ffmpeg from 'fluent-ffmpeg'
 import fs from 'fs'
 import path from 'path'
 
-import { logger } from '@/lib/logger'
-
-ffmpeg.setFfmpegPath(ffmpegInstaller.path)
-ffmpeg.setFfprobePath(ffprobeInstaller.path)
+// ffmpeg.setFfmpegPath(ffmpegInstaller.path)
+// ffmpeg.setFfprobePath(ffprobeInstaller.path)
 
 interface SplitResult {
 	segments: string[]
