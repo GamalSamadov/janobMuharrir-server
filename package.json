@@ -6,7 +6,8 @@
 	"scripts": {
 		"dev": "nodemon",
 		"build": "prisma generate && tsc && tsc-alias",
-		"start": "node dist/server.js"
+		"start": "node dist/server.js",
+		"postinstall": "prisma generate"
 	},
 	"_moduleAliases": {
 		"@": "."
