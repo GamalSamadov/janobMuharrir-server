@@ -2,10 +2,10 @@
 	"name": "janobmuharrir-server",
 	"version": "1.0.0",
 	"description": "",
-	"main": "index.js",
+	"main": "server.js",
 	"scripts": {
 		"dev": "nodemon",
-		"build": "tsc",
+		"build": "tsc && prisma generate",
 		"start": "node dist/server.js"
 	},
 	"_moduleAliases": {
