@@ -1,10 +1,9 @@
 import { Request, Response, Router } from 'express'
 
 import { authenticate } from '@/middlewares/auth.middleware'
-import { UserService } from '@/services/user/user.service'
+import { userService } from '@/services/user'
 
 const router = Router()
-const userService = new UserService()
 
 router.get('/profile', authenticate, async (req: Request, res: Response) => {
 	try {

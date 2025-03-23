@@ -3,7 +3,7 @@ import { hash } from 'argon2'
 
 import { AuthDto } from '@/dto/auth.dto'
 
-export class UserService {
+class UserService {
 	private prisma = new PrismaClient()
 
 	async getUsers() {
@@ -51,3 +51,7 @@ export class UserService {
 		})
 	}
 }
+
+const userService = new UserService()
+
+export default userService

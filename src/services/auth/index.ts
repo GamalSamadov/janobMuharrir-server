@@ -1,3 +1,3 @@
-export * from './auth.service'
-export * from './jwt.service'
-export * from './refresh-token.service'
+export { default as authService } from './auth.service'
+export { default as jwtService } from './jwt.service'
+export { default as refreshTokenService } from './refresh-token.service'

@@ -3,7 +3,7 @@ import * as dotenv from 'dotenv'
 import { NextFunction, Request, Response } from 'express'
 import * as jwt from 'jsonwebtoken'
 
-import { UserService } from '@/services/user/user.service'
+import { userService } from '@/services/user'
 
 dotenv.config()
 
@@ -16,8 +16,6 @@ declare global {
 		}
 	}
 }
-
-const userService = new UserService()
 
 export const authenticate = async (
 	req: Request,
