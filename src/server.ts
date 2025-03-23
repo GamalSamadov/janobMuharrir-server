@@ -23,6 +23,10 @@ const app = express()
 app.use(express.json())
 app.use(cookieParser())
 
+logger.info(
+	`Allowed CORS origins: ${[process.env.CLIENT_URL, 'http://localhost:3000']}`
+)
+
 app.use(
 	cors({
 		origin: [process.env.CLIENT_URL, 'http://localhost:3000'],
@@ -30,6 +34,14 @@ app.use(
 		exposedHeaders: ['Set-Cookie']
 	})
 )
+
+// Add logging for incoming requests
+app.use((req, res, next) => {
+	logger.info(
+		`Received ${req.method} request to ${req.originalUrl} from ${req.headers.origin}`
+	)
+	next()
+})
 
 async function main() {
 	app.use('/api/auth', authController)
