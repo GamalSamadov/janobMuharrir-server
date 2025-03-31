@@ -50,47 +50,37 @@ export async function runTranscriptionJob(
 	url: string,
 	broadcast?: (content: string, completed: boolean) => void
 ) {
+	const startTime = performance.now()
+
+	await transcriptService.running(jobId)
+
+	const info = await ytdl.getInfo(url, ytdlOptions)
+	const title = info.videoDetails.title
+	const totalDuration = parseFloat(info.videoDetails.lengthSeconds)
+
+	await transcriptService.updateTitle(jobId, title)
+
+	await pushTranscriptionEvent(jobId, 'Ovoz yuklanmoqda', false, broadcast)
+	await delay(500)
+
+	const segmentDuration = 150 // 2.5 minutes
+	const numSegments = Math.ceil(totalDuration / segmentDuration)
+	await pushTranscriptionEvent(
+		jobId,
+		`Ovoz ${numSegments}ga taqsimlanmoqda`,
+		false,
+		broadcast
+	)
+	await delay(500)
+
+	// TRANSCRIPTION
+
+	await pushTranscriptionEvent(jobId, `Matnga o'g'rilmoqda`, false, broadcast)
+
+	const editedTexts: string[] = []
+	let i = 0
+
 	try {
-		const startTime = performance.now()
-
-		await transcriptService.running(jobId)
-
-		const info = await ytdl.getInfo(url, ytdlOptions)
-		const title = info.videoDetails.title
-		const totalDuration = parseFloat(info.videoDetails.lengthSeconds)
-
-		await transcriptService.updateTitle(jobId, title)
-
-		await pushTranscriptionEvent(
-			jobId,
-			'Ovoz yuklanmoqda',
-			false,
-			broadcast
-		)
-		await delay(500)
-
-		const segmentDuration = 150 // 2.5 minutes
-		const numSegments = Math.ceil(totalDuration / segmentDuration)
-		await pushTranscriptionEvent(
-			jobId,
-			`Ovoz ${numSegments}ga taqsimlanmoqda`,
-			false,
-			broadcast
-		)
-		await delay(500)
-
-		// TRANSCRIPTION
-
-		await pushTranscriptionEvent(
-			jobId,
-			`Matnga o'g'rilmoqda`,
-			false,
-			broadcast
-		)
-
-		const editedTexts: string[] = []
-		let i = 0
-
 		while (i < numSegments) {
 			const segmentNumber = i + 1
 			const startTime = i * segmentDuration
