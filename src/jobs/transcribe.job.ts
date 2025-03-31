@@ -1,6 +1,4 @@
 import ytdl from '@distube/ytdl-core'
-// import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
-// import ffprobeInstaller from '@ffprobe-installer/ffprobe'
 import ffmpeg from 'fluent-ffmpeg'
 import { performance } from 'perf_hooks'
 
@@ -21,10 +19,17 @@ import {
 	transcriptService
 } from '@/services/transcript/transcript.service'
 
-// ffmpeg.setFfmpegPath(ffmpegInstaller.path)
-// ffmpeg.setFfprobePath(ffprobeInstaller.path)
-
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms))
+
+const ytdlOptions = {
+	filter: 'audioonly' as const,
+	requestOptions: {
+		headers: {
+			'User-Agent':
+				'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36'
+		}
+	}
+}
 
 export async function pushTranscriptionEvent(
 	jobId: string,
@@ -50,7 +55,7 @@ export async function runTranscriptionJob(
 
 		await transcriptService.running(jobId)
 
-		const info = await ytdl.getInfo(url)
+		const info = await ytdl.getInfo(url, ytdlOptions)
 		const title = info.videoDetails.title
 		const totalDuration = parseFloat(info.videoDetails.lengthSeconds)
 
@@ -97,18 +102,30 @@ export async function runTranscriptionJob(
 			// Stream segment from YouTube
 
 			const segmentStream = ytdl(url, {
-				filter: 'audioonly',
-				begin: startTime
+				...ytdlOptions,
+				begin: `${startTime}s`
 			})
 			const ffmpegStream = ffmpeg(segmentStream)
-				.inputOptions([`-ss ${startTime}`]) // Explicit seek
-				.outputOptions([
-					`-t ${actualDuration}`,
-					'-c:a libmp3lame', // Force MP3 encoding
-					'-q:a 2' // Audio quality (0-9)
-				])
 				.format('mp3')
-				.on('error', err => logger.error('FFmpeg error:', err))
+				.audioCodec('libmp3lame')
+				.audioQuality(2)
+				.duration(actualDuration)
+				.on('start', cmd => logger.info('FFmpeg command:', cmd))
+				.on('error', (err, stdout, stderr) => {
+					logger.error(
+						`FFmpeg error processing segment ${segmentNumber}:`
+					)
+
+					logger.error(
+						{
+							message: err.message,
+							stack: err.stack,
+							stdout: stdout,
+							stderr: stderr
+						},
+						'FFmpeg Error Details:'
+					)
+				})
 				.pipe()
 
 			const destFileName = `segment_${jobId}_${i}.mp3`

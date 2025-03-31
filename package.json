@@ -9,7 +9,7 @@
 		"start": "node dist/server.js"
 	},
 	"_moduleAliases": {
-		"@": "."
+		"@": "./src"
 	},
 	"repository": {
 		"type": "git",

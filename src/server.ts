@@ -14,6 +14,8 @@ import {
 } from '@/controllers'
 import { logger } from '@/lib/logger'
 
+import { IS_PRODUCTION } from './constants'
+
 dotenv.config()
 
 export const prisma = new PrismaClient()
@@ -31,9 +33,6 @@ async function run() {
 		})
 	)
 
-	app.get('/test', (req: Request, res: Response) => {
-		res.json({ message: 'Hello World' }).status(200)
-	})
 	app.use('/api/auth', authController)
 	app.use('/api/users', userController)
 	app.use('/api/sessions', sessionController)
@@ -51,6 +50,13 @@ run()
 	.then(async () => {
 		await prisma.$connect()
 		logger.info('Connected to database')
+
+		if (IS_PRODUCTION) {
+			logger.info(`Server is on production mode`)
+		} else {
+			logger.info(`Server is on development mode`)
+		}
+
 		const port = process.env.PORT || 4200
 		app.listen(port, () => {
 			logger.info(`Server is running on: http://localhost:${port}`)
@@ -60,5 +66,3 @@ run()
 		logger.error(`Failed to connect to database ${e}`)
 		process.exit(1)
 	})
-
-export default app

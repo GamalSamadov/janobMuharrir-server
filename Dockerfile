@@ -1,7 +1,5 @@
 FROM node:20 AS build
 
-ENV DEBIAN_FRONTEND=noninteractive
-
 RUN apt-get update && apt-get install -y ffmpeg
 
 WORKDIR /app
@@ -16,11 +14,9 @@ RUN yarn prisma generate
 
 RUN yarn build
 
-
 FROM node:20 AS production
 
-ENV NODE_ENV=production
-ENV DEBIAN_FRONTEND=noninteractive
+ENV NODE_ENV="production"
 
 RUN apt-get update && apt-get install -y ffmpeg
 
