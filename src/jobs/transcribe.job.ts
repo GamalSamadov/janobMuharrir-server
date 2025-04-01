@@ -1,6 +1,6 @@
 import ffmpeg from 'fluent-ffmpeg'
 import { performance } from 'perf_hooks'
-import ytdl from 'ytdl-core'
+import youtubeDl from 'youtube-dl-exec'
 
 import {
 	convertToUzbekLatin,
@@ -21,19 +21,12 @@ import {
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms))
 
-const ytdlOptions = {
-	filter: 'audioonly' as const,
-	requestOptions: {
-		headers: {
-			'User-Agent':
-				'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-			Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-			'Accept-Language': 'en-US,en;q=0.5',
-			'Accept-Encoding': 'gzip, deflate, br',
-			Connection: 'keep-alive',
-			Referer: 'https://www.youtube.com/'
-		}
-	}
+const YTDL_FLAGS = {
+	format: 'bestaudio/best'
+	// userAgent: 'Mozilla/5.0 ...',
+	// referer: 'https://www.youtube.com/',
+	// quiet: true, // Suppress console output from youtube-dl
+	// noWarnings: true,
 }
 
 export async function pushTranscriptionEvent(
@@ -57,112 +50,174 @@ export async function runTranscriptionJob(
 ) {
 	const startTime = performance.now()
 
-	await transcriptService.running(jobId)
-
-	const info = await ytdl.getInfo(url, ytdlOptions)
-	const title = info.videoDetails.title
-	const totalDuration = parseFloat(info.videoDetails.lengthSeconds)
-
-	await transcriptService.updateTitle(jobId, title)
-
-	await pushTranscriptionEvent(jobId, 'Ovoz yuklanmoqda', false, broadcast)
-	await delay(500)
-
-	const segmentDuration = 150 // 2.5 minutes
-	const numSegments = Math.ceil(totalDuration / segmentDuration)
-	await pushTranscriptionEvent(
-		jobId,
-		`Ovoz ${numSegments}ga taqsimlanmoqda`,
-		false,
-		broadcast
-	)
-	await delay(500)
-
-	// TRANSCRIPTION
-
-	await pushTranscriptionEvent(jobId, `Matnga o'g'rilmoqda`, false, broadcast)
-
-	const editedTexts: string[] = []
-	let i = 0
-
 	try {
-		while (i < numSegments) {
-			const segmentNumber = i + 1
-			const startTime = i * segmentDuration
-			const actualDuration = Math.min(
-				segmentDuration,
-				totalDuration - startTime
+		await transcriptService.running(jobId)
+
+		logger.info(`Workspaceing video info for: ${url}`)
+		const info = await youtubeDl(url, {
+			dumpSingleJson: true,
+			noWarnings: true
+			// Pass necessary flags from YTDL_FLAGS if needed for metadata fetching
+			// format: YTDL_FLAGS.format, // Usually not needed for dumpSingleJson
+		})
+
+		const videoInfo = typeof info === 'string' ? JSON.parse(info) : info
+
+		const title = videoInfo.title || 'Untitled Video'
+		const totalDuration = videoInfo.duration // duration is usually in seconds
+
+		if (typeof totalDuration !== 'number') {
+			logger.error(
+				`Could not determine video duration for ${url}. Info:`,
+				videoInfo
 			)
-
-			// Stream segment from YouTube
-
-			const segmentStream = ytdl(url, {
-				...ytdlOptions,
-				begin: `${startTime}s`
-			})
-			const ffmpegStream = ffmpeg(segmentStream)
-				.format('mp3')
-				.audioCodec('libmp3lame')
-				.audioQuality(2)
-				.duration(actualDuration)
-				.on('start', cmd => logger.info('FFmpeg command:', cmd))
-				.on('error', (err, stdout, stderr) => {
-					logger.error(
-						`FFmpeg error processing segment ${segmentNumber}:`
-					)
-
-					logger.error(
-						{
-							message: err.message,
-							stack: err.stack,
-							stdout: stdout,
-							stderr: stderr
-						},
-						'FFmpeg Error Details:'
-					)
-				})
-				.pipe()
-
-			const destFileName = `segment_${jobId}_${i}.mp3`
-			const gcsUri = await uploadStreamToGCS(ffmpegStream, destFileName)
-
+			await transcriptService.error(jobId)
 			await pushTranscriptionEvent(
 				jobId,
-				`Google matnni o'girmoqda ${segmentNumber}/${numSegments}`,
-				false,
+				"Video davomiyligini aniqlab bo'lmadi",
+				true,
 				broadcast
 			)
+			return // Stop processing
+		}
+
+		logger.info(`Video Title: ${title}, Duration: ${totalDuration}s`)
+
+		await transcriptService.updateTitle(jobId, title)
+
+		await pushTranscriptionEvent(
+			jobId,
+			'Ovoz yuklanmoqda',
+			false,
+			broadcast
+		)
+		await delay(500)
+
+		logger.info(`Getting direct audio stream URL for: ${url}`)
+		const audioUrl = await youtubeDl(url, {
+			...YTDL_FLAGS,
+			getUrl: true,
+			quiet: true
+		})
+
+		// youtube-dl-exec with getUrl returns a string (the URL)
+		if (typeof audioUrl !== 'string' || !audioUrl.startsWith('http')) {
+			logger.error(
+				`Failed to get a valid audio stream URL for ${url}. Output: ${audioUrl}`
+			)
+			await transcriptService.error(jobId)
+			await pushTranscriptionEvent(
+				jobId,
+				"Audio manzilini olib bo'lmadi",
+				true,
+				broadcast
+			)
+			return
+		}
+		logger.info(`Obtained audio stream URL.`)
+
+		const segmentDuration = 150 // 2.5 minutes
+		const numSegments = Math.ceil(totalDuration / segmentDuration)
+		await pushTranscriptionEvent(
+			jobId,
+			`Ovoz ${numSegments}ga taqsimlanmoqda`,
+			false,
+			broadcast
+		)
+		await delay(500)
+
+		// TRANSCRIPTION
+
+		await pushTranscriptionEvent(
+			jobId,
+			`Matnga o'g'rilmoqda`,
+			false,
+			broadcast
+		)
+
+		const editedTexts: string[] = []
+		let i = 0
+
+		while (i < numSegments) {
+			const segmentNumber = i + 1
+			const segmentStartTime = i * segmentDuration
+			const actualDuration = Math.min(
+				segmentDuration,
+				totalDuration - segmentStartTime
+			)
+
+			if (actualDuration <= 0) {
+				logger.warn(
+					`Skipping segment ${segmentNumber} due to zero or negative duration.`
+				)
+				i++
+				continue
+			}
+
+			logger.info(
+				`Processing segment ${segmentNumber}/${numSegments}, Start: ${segmentStartTime}s, Duration: ${actualDuration}s`
+			)
+
+			const destFileName = `segment_${jobId}_${i}.mp3`
+			let gcsUri: string | null = null
 
 			try {
+				const ffmpegStream = ffmpeg(audioUrl)
+					.inputOption(`-ss ${segmentStartTime}`)
+					.inputOption('-nostdin')
+					.duration(actualDuration)
+					.format('mp3')
+					.audioCodec('libmp3lame')
+					.audioQuality(2)
+					.on('start', cmd =>
+						logger.info(
+							`FFmpeg command segment ${segmentNumber}: ${cmd}`
+						)
+					)
+					.on('error', (err, stdout, stderr) => {
+						logger.error(
+							`FFmpeg error processing segment ${segmentNumber}:`
+						)
+						logger.error(
+							{
+								message: err.message,
+								stack: err.stack,
+								stdout: stdout,
+								stderr: stderr,
+								segmentStartTime,
+								actualDuration
+							},
+							'FFmpeg Error Details:'
+						)
+					})
+					.pipe()
+
+				gcsUri = await uploadStreamToGCS(ffmpegStream, destFileName)
+				logger.info(
+					`Segment ${segmentNumber} uploaded to GCS: ${gcsUri}`
+				)
+
+				await pushTranscriptionEvent(
+					jobId,
+					`Google matnni o'girmoqda ${segmentNumber}/${numSegments}`,
+					false,
+					broadcast
+				)
+
 				const transcriptGoogle = await transcribeWithGoogle(gcsUri)
 
 				if (!transcriptGoogle) {
 					await pushTranscriptionEvent(
 						jobId,
-						`${segmentNumber}/${numSegments}-chi google matnida xatolik yuz berdi!`,
+						`${segmentNumber}/${numSegments}-chi google matnida xatolik yuz berdi! Qayta urinilmoqda...`,
 						false,
 						broadcast
 					)
-
-					await delay(500)
-
-					await pushTranscriptionEvent(
-						jobId,
-						`Qaytadan google matnni o'girmoqda ${segmentNumber}/${numSegments}!`,
-						false,
-						broadcast
-					)
+					await delay(1000)
 					continue
 				}
 
 				// elevenlabs STT
-
-				const segmentStreamForElevenLabs =
-					await getGCSFileStream(gcsUri)
-				const transcriptElevenLabs = await transcribeAudioElevenLabs(
-					segmentStreamForElevenLabs
-				)
-
 				await pushTranscriptionEvent(
 					jobId,
 					`Elevenlabs matnni o'girmoqda ${segmentNumber}/${numSegments}`,
@@ -170,22 +225,20 @@ export async function runTranscriptionJob(
 					broadcast
 				)
 
+				const segmentStreamForElevenLabs =
+					await getGCSFileStream(gcsUri)
+				const transcriptElevenLabs = await transcribeAudioElevenLabs(
+					segmentStreamForElevenLabs
+				)
+
 				if (!transcriptElevenLabs) {
 					await pushTranscriptionEvent(
 						jobId,
-						`${segmentNumber}/${numSegments}-chi elevenlabs matnida xatolik yuz berdi!`,
+						`${segmentNumber}/${numSegments}-chi elevenlabs matnida xatolik yuz berdi! Qayta urinilmoqda...`,
 						false,
 						broadcast
 					)
-
-					await delay(500)
-
-					await pushTranscriptionEvent(
-						jobId,
-						`Qaytadan elevenlabs matnni o'girmoqda ${segmentNumber}/${numSegments}!`,
-						false,
-						broadcast
-					)
+					await delay(1000)
 					continue
 				}
 
@@ -200,53 +253,74 @@ export async function runTranscriptionJob(
 					transcriptGoogle,
 					transcriptElevenLabs
 				)
+
 				if (finalText) {
 					editedTexts.push(finalText)
-
 					await pushTranscriptionEvent(
 						jobId,
-						`Ovoz o'chirilmoqda ${segmentNumber}/${numSegments}!`,
+						`${segmentNumber}/${numSegments}-chi matn tayyor! Ovoz o'chirilmoqda...`,
 						false,
 						broadcast
 					)
-
 					await delay(500)
 				} else {
 					await pushTranscriptionEvent(
 						jobId,
-						`Qaytadan Gemini tahrir qilmoqda ${segmentNumber}/${numSegments}!`,
+						`Gemini tahririda xatolik (${segmentNumber}/${numSegments})! Qayta urinilmoqda...`,
 						false,
 						broadcast
 					)
-
-					await delay(500)
-
+					await delay(1000)
 					continue
 				}
-			} catch (err) {
-				logger.error('Xatolik:', err)
-				await transcriptService.error(jobId)
-
-				continue
+			} catch (segmentErr) {
+				logger.error(
+					`Error processing segment ${segmentNumber}:`,
+					segmentErr
+				)
+				// Push an error event for this segment
+				await pushTranscriptionEvent(
+					jobId,
+					`Segment ${segmentNumber}/${numSegments} da xatolik yuz berdi. Keyingisiga o'tilmoqda.`,
+					false,
+					broadcast
+				)
+				await delay(1000)
 			} finally {
-				try {
-					await deleteGCSFile(gcsUri)
-				} catch (deleteErr) {
-					logger.error('Failed to delete segment:', deleteErr)
+				if (gcsUri) {
+					try {
+						logger.info(
+							`Deleting GCS file for segment ${segmentNumber}: ${gcsUri}`
+						)
+						await deleteGCSFile(gcsUri)
+					} catch (deleteErr) {
+						logger.error(
+							`Failed to delete segment ${segmentNumber} from GCS (${gcsUri}):`,
+							deleteErr
+						)
+					}
 				}
 			}
 
-			await pushTranscriptionEvent(
-				jobId,
-				`${segmentNumber}/${numSegments}-chi matn tayyor!`,
-				false,
-				broadcast
-			)
-			await delay(500)
-			i++
+			// If we successfully processed the segment (no 'continue' was hit in try/catch)
+			i++ // Move to the next segment
+			await delay(200) // Small delay between segments
 		}
 
-		// Mark session complete (assuming each session has a single job to do)
+		// --- Combine final results ---
+		if (editedTexts.length === 0 && numSegments > 0) {
+			logger.error(
+				`Job ${jobId} finished, but no segments were successfully transcribed.`
+			)
+			await transcriptService.error(jobId)
+			await pushTranscriptionEvent(
+				jobId,
+				"Matn qismlarini o'girib bo'lmadi.",
+				true,
+				broadcast
+			)
+			return // Exit early
+		}
 
 		try {
 			await userSession.completed(sessionId)
@@ -257,29 +331,40 @@ export async function runTranscriptionJob(
 			)
 		}
 
-		await pushTranscriptionEvent(jobId, 'Matn tayyor!', false, broadcast)
-
+		await pushTranscriptionEvent(
+			jobId,
+			'Matn tayyorlanmoqda...',
+			false,
+			broadcast
+		)
 		await delay(500)
-
-		// Combine final
 
 		const combinedResult = editedTexts
 			.join('\n\n')
-			.replace(/\(\(\((.*?)\)\)\)/g, '$1')
+			.replace(/\(\(\((.*?)\)\)\)/g, '$1') // Consider if this regex is still needed
 		const duration = performance.now() - startTime
 
 		await pushTranscriptionEvent(jobId, `Text jamlandi!`, false, broadcast)
-
 		await delay(500)
 
 		const finalTranscript = `<i style="display: block; font-style: italic; text-align: center;">🕒Arginalni yozib chiqish uchun: ${formatDuration(duration)} vaqt ketdi!</i><h1 style="font-weight: 700; font-size: 1.8rem; margin: 1rem 0; text-align: center; line-height: 1;">${title}</h1>\n\n<p style="text-indent: 30px;">${convertToUzbekLatin(combinedResult)}</p>`
 
 		await transcriptService.saveFinalTranscript(jobId, finalTranscript)
+		logger.info(
+			`Transcription job ${jobId} completed successfully in ${formatDuration(duration)}.`
+		)
 
 		// Send final SSE event
 		await pushTranscriptionEvent(jobId, finalTranscript, true, broadcast)
 	} catch (err) {
-		logger.error('runTranscriptionJob error:', err)
+		// Catch errors from initial setup or unexpected loop errors
+		logger.error(`runTranscriptionJob error for job ${jobId}:`, err)
 		await transcriptService.error(jobId)
+		await pushTranscriptionEvent(
+			jobId,
+			`Umumiy xatolik yuz berdi: ${err instanceof Error ? err.message : String(err)}`,
+			true,
+			broadcast
+		) // Mark as completed with error
 	}
 }
