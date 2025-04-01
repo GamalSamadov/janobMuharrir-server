@@ -31,8 +31,7 @@ const ytdlOptions = {
 			'Accept-Language': 'en-US,en;q=0.5',
 			'Accept-Encoding': 'gzip, deflate, br',
 			Connection: 'keep-alive',
-			Referer: 'https://www.youtube.com/',
-			Cookie: 'CONSENT=YES+cb.20220301-11-p0.en+FX+917;'
+			Referer: 'https://www.youtube.com/'
 		}
 	}
 }
