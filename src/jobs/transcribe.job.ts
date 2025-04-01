@@ -25,7 +25,8 @@ const YTDL_FLAGS = {
 	format: 'bestaudio/best',
 	userAgent:
 		'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-	referer: 'https://www.youtube.com/'
+	referer: 'https://www.youtube.com/',
+	cookiesFromBrowser: 'chrome'
 }
 
 export async function pushTranscriptionEvent(
@@ -54,7 +55,6 @@ export async function runTranscriptionJob(
 
 		logger.info(`Workspaceing video info for: ${url}`)
 		const info = await youtubeDl(url, {
-			...YTDL_FLAGS,
 			dumpSingleJson: true,
 			noWarnings: true,
 			// Pass necessary flags from YTDL_FLAGS if needed for metadata fetching
@@ -97,7 +97,10 @@ export async function runTranscriptionJob(
 
 		logger.info(`Getting direct audio stream URL for: ${url}`)
 		const audioUrl = await youtubeDl(url, {
-			...YTDL_FLAGS,
+			dumpSingleJson: true,
+			noWarnings: true,
+			// Pass necessary flags from YTDL_FLAGS if needed for metadata fetching
+			format: YTDL_FLAGS.format, // Usually not needed for dumpSingleJson,
 			getUrl: true,
 			quiet: true
 		})
