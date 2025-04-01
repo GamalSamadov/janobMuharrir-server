@@ -60,7 +60,8 @@ export async function runTranscriptionJob(
 			// Pass necessary flags from YTDL_FLAGS if needed for metadata fetching
 			format: YTDL_FLAGS.format, // Usually not needed for dumpSingleJson,
 			getUrl: true,
-			quiet: true
+			quiet: true,
+			cookies: './youtube-cookies.txt'
 		})
 
 		const videoInfo = typeof info === 'string' ? JSON.parse(info) : info
@@ -102,7 +103,8 @@ export async function runTranscriptionJob(
 			// Pass necessary flags from YTDL_FLAGS if needed for metadata fetching
 			format: YTDL_FLAGS.format, // Usually not needed for dumpSingleJson,
 			getUrl: true,
-			quiet: true
+			quiet: true,
+			cookies: './youtube-cookies.txt'
 		})
 
 		// youtube-dl-exec with getUrl returns a string (the URL)
