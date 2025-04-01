@@ -23,7 +23,6 @@
 	},
 	"homepage": "https://github.com/GamalSamadov/janobMuharrir-server#readme",
 	"dependencies": {
-		"@distube/ytdl-core": "^4.16.6",
 		"@google-cloud/speech": "^7.0.0",
 		"@google-cloud/storage": "^7.15.2",
 		"@google/generative-ai": "^0.24.0",
@@ -44,7 +43,8 @@
 		"pino": "^9.6.0",
 		"pino-pretty": "^13.0.0",
 		"tsconfig-paths": "^4.2.0",
-		"uuid": "^11.1.0"
+		"uuid": "^11.1.0",
+		"ytdl-core": "^4.11.5"
 	},
 	"devDependencies": {
 		"@trivago/prettier-plugin-sort-imports": "^5.2.2",

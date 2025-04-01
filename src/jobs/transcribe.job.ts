@@ -1,6 +1,6 @@
-import ytdl from '@distube/ytdl-core'
 import ffmpeg from 'fluent-ffmpeg'
 import { performance } from 'perf_hooks'
+import ytdl from 'ytdl-core'
 
 import {
 	convertToUzbekLatin,
