@@ -26,11 +26,13 @@ const ytdlOptions = {
 	requestOptions: {
 		headers: {
 			'User-Agent':
-				'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-
+				'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+			Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
 			'Accept-Language': 'en-US,en;q=0.5',
 			'Accept-Encoding': 'gzip, deflate, br',
-			Connection: 'keep-alive'
+			Connection: 'keep-alive',
+			Referer: 'https://www.youtube.com/',
+			Cookie: 'CONSENT=YES+cb.20220301-11-p0.en+FX+917;'
 		}
 	}
 }
