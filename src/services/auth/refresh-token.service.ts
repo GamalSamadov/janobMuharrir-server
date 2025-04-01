@@ -19,7 +19,7 @@ const getBaseDomain = (url: string | undefined): string | undefined => {
 
 class RefreshTokenService {
 	readonly EXPIRE_DAY_REFRESH_TOKEN = 30
-	readonly REFRESH_TOKEN_NAME = 'refresh_token'
+	readonly REFRESH_TOKEN_NAME = 'refreshToken'
 
 	addRefreshTokenResponse(res: Response, refreshToken: string) {
 		const expiresIn = new Date()
