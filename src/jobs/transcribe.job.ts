@@ -23,7 +23,7 @@ const delay = (ms: number) => new Promise(res => setTimeout(res, ms))
 
 const YTDL_FLAGS = {
 	format: 'bestaudio/best',
-	'User-Agent':
+	userAgent:
 		'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
 	referer: 'https://www.youtube.com/',
 	'Accept-Language': 'en-US,en;q=0.5',
