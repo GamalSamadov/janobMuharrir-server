@@ -21,14 +21,6 @@ import {
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms))
 
-const YTDL_FLAGS = {
-	format: 'bestaudio/best',
-	userAgent:
-		'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-	referer: 'https://www.youtube.com/',
-	cookiesFromBrowser: 'chrome'
-}
-
 export async function pushTranscriptionEvent(
 	jobId: string,
 	content: string,
@@ -57,8 +49,6 @@ export async function runTranscriptionJob(
 		const info = await youtubeDl(url, {
 			dumpSingleJson: true,
 			noWarnings: true,
-			// Pass necessary flags from YTDL_FLAGS if needed for metadata fetching
-			format: YTDL_FLAGS.format, // Usually not needed for dumpSingleJson,
 			getUrl: true,
 			quiet: true,
 			cookies: './youtube-cookies.txt'
@@ -100,8 +90,6 @@ export async function runTranscriptionJob(
 		const audioUrl = await youtubeDl(url, {
 			dumpSingleJson: true,
 			noWarnings: true,
-			// Pass necessary flags from YTDL_FLAGS if needed for metadata fetching
-			format: YTDL_FLAGS.format, // Usually not needed for dumpSingleJson,
 			getUrl: true,
 			quiet: true,
 			cookies: './youtube-cookies.txt'
