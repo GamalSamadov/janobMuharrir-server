@@ -1,4 +1,5 @@
 import ffmpeg from 'fluent-ffmpeg'
+import path from 'path'
 import { performance } from 'perf_hooks'
 import youtubeDl from 'youtube-dl-exec'
 
@@ -20,6 +21,8 @@ import {
 } from '@/services/transcript/transcript.service'
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms))
+
+const cookiesPath = path.resolve(__dirname, 'youtube-cookies.txt')
 
 export async function pushTranscriptionEvent(
 	jobId: string,
@@ -51,7 +54,7 @@ export async function runTranscriptionJob(
 			noWarnings: true,
 			getUrl: true,
 			quiet: true,
-			cookies: './youtube-cookies.txt'
+			cookies: cookiesPath
 		})
 
 		const videoInfo = typeof info === 'string' ? JSON.parse(info) : info
@@ -92,7 +95,7 @@ export async function runTranscriptionJob(
 			noWarnings: true,
 			getUrl: true,
 			quiet: true,
-			cookies: './youtube-cookies.txt'
+			cookies: cookiesPath
 		})
 
 		// youtube-dl-exec with getUrl returns a string (the URL)
