@@ -28,8 +28,8 @@ async function run() {
 	app.use(
 		cors({
 			origin: [process.env.CLIENT_URL, 'http://localhost:3000'],
-			credentials: true,
-			exposedHeaders: ['Set-Cookie']
+			credentials: true
+			// exposedHeaders: ['Set-Cookie']
 		})
 	)
 
