@@ -17,7 +17,7 @@ class RefreshTokenService {
 				: 'localhost',
 			expires: expiresIn,
 			secure: IS_PRODUCTION,
-			sameSite: IS_PRODUCTION ? 'lax' : 'none'
+			sameSite: 'none'
 		})
 	}
 
@@ -29,7 +29,7 @@ class RefreshTokenService {
 				: 'localhost',
 			expires: new Date(0),
 			secure: IS_PRODUCTION,
-			sameSite: IS_PRODUCTION ? 'lax' : 'none'
+			sameSite: 'none'
 		})
 	}
 }
