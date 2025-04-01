@@ -21,12 +21,21 @@ import {
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms))
 
+const USER_AGENTS = [
+	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+	'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
+	'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0'
+]
+
+function getRandomUserAgent() {
+	return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
+}
+
 const ytdlOptions = {
 	filter: 'audioonly' as const,
 	requestOptions: {
 		headers: {
-			'User-Agent':
-				'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36'
+			'User-Agent': getRandomUserAgent()
 		}
 	}
 }
@@ -54,7 +63,23 @@ export async function runTranscriptionJob(
 
 	await transcriptService.running(jobId)
 
-	const info = await ytdl.getInfo(url, ytdlOptions)
+	await delay(2000) // Increased initial delay
+
+	let info
+	try {
+		info = await ytdl.getInfo(url, ytdlOptions)
+	} catch (error: any) {
+		if (error.message.includes('Sign in to confirm you’re not a bot')) {
+			logger.error(
+				'Initial ytdl.getInfo failed due to bot detection. Consider implementing more robust anti-bot measures.',
+				error
+			)
+			await transcriptService.error(jobId)
+			return // Stop the job
+		}
+		throw error // Re-throw other errors
+	}
+
 	const title = info.videoDetails.title
 	const totalDuration = parseFloat(info.videoDetails.lengthSeconds)
 
