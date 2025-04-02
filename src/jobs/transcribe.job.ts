@@ -23,17 +23,26 @@ const delay = (ms: number) => new Promise(res => setTimeout(res, ms))
 
 const ytdlOptions = {
 	filter: 'audioonly' as const,
+	quality: 'highestaudio',
+	highWaterMark: 1 << 25,
+	dlChunkSize: 0,
+	retries: 3,
 	requestOptions: {
 		headers: {
 			'User-Agent':
-				'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-			Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+				'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+			Accept: '*/*',
 			'Accept-Language': 'en-US,en;q=0.9',
 			Referer: 'https://www.youtube.com/',
 			Origin: 'https://www.youtube.com',
-			DNT: '1'
+			DNT: '1',
+			'X-Forwarded-For': generateRandomIP() // Helps avoid rate limiting
 		}
 	}
+}
+
+function generateRandomIP(): string {
+	return `${Math.floor(Math.random() * 255) + 1}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`
 }
 
 export async function pushTranscriptionEvent(
