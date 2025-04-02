@@ -1,5 +1,6 @@
 import ytdl from '@distube/ytdl-core'
 import ffmpeg from 'fluent-ffmpeg'
+import fs from 'fs'
 import { performance } from 'perf_hooks'
 
 import {
@@ -21,7 +22,19 @@ import {
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms))
 
-const agent = ytdl.createProxyAgent({ uri: process.env.PROXY_URL || '' })
+const agent = ytdl.createAgent([
+	{
+		domain: '.youtube.com',
+		expirationDate: 1234567890,
+		hostOnly: false,
+		httpOnly: true,
+		name: 'Cookie',
+		path: '/',
+		sameSite: 'no_restriction',
+		secure: true,
+		value: process.env.YOUTUBE_COOKIE || ''
+	}
+])
 
 export async function pushTranscriptionEvent(
 	jobId: string,
