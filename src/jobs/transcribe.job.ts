@@ -131,7 +131,7 @@ async function getVideoInfoWithYtDlp(
 			'--skip-download',
 			// '--force-ipv4', // Uncomment if IPv6 issues are suspected
 			'--user-agent',
-			'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36', // Example UA
+			'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 
 			youtubeUrl
 		]
@@ -302,7 +302,7 @@ async function streamAudioWithYtDlp(
 			// Alternative: Direct download range (might be less reliable)
 			// '--download-sections', `*${startTime}-${startTime + duration}`,
 			'--user-agent',
-			'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36', // Example UA
+			'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 
 			youtubeUrl
 		]
