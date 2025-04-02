@@ -21,16 +21,7 @@ import {
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms))
 
-const ytdlOptions = {
-	filter: 'audioonly' as const,
-	requestOptions: {
-		headers: {
-			'User-Agent':
-				'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-			cookie: process.env.YOUTUBE_COOKIE || ''
-		}
-	}
-}
+const agent = ytdl.createProxyAgent({ uri: process.env.PROXY_URL || '' })
 
 export async function pushTranscriptionEvent(
 	jobId: string,
@@ -57,7 +48,7 @@ export async function runTranscriptionJob(
 
 	await delay(1000)
 
-	const info = await ytdl.getInfo(url, ytdlOptions)
+	const info = await ytdl.getInfo(url, { agent })
 	const title = info.videoDetails.title
 	const totalDuration = parseFloat(info.videoDetails.lengthSeconds)
 
@@ -95,7 +86,7 @@ export async function runTranscriptionJob(
 			// Stream segment from YouTube
 
 			const segmentStream = ytdl(url, {
-				...ytdlOptions,
+				agent,
 				begin: `${startTime}s`
 			})
 			const ffmpegStream = ffmpeg(segmentStream)
