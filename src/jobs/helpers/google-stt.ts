@@ -45,16 +45,39 @@ export async function getGCSFileStream(gcsUri: string): Promise<Readable> {
 	return file.createReadStream()
 }
 
-export async function deleteGCSFile(gcsUri: string): Promise<void> {
+export async function deleteGCSFile(fileName: string): Promise<void> {
+	if (!BUCKET_NAME) {
+		throw new Error(
+			'Cannot delete file: GOOGLE_CLOUD_BUCKET_NAME is not configured.'
+		)
+	}
+	if (
+		!fileName ||
+		typeof fileName !== 'string' ||
+		fileName.trim().length === 0
+	) {
+		logger.error(
+			`Invalid file name provided to deleteGCSFile: "${fileName}"`
+		)
+		throw new Error('A valid file name must be provided to delete.')
+	}
+
 	try {
-		const [bucketName, fileName] = gcsUri.replace('gs://', '').split('/', 2)
-		const bucket = storage.bucket(bucketName)
+		logger.info(
+			`Attempting to delete GCS file "${fileName}" from bucket "${BUCKET_NAME}"`
+		)
+		const bucket = storage.bucket(BUCKET_NAME)
 		const file = bucket.file(fileName)
 
 		await file.delete()
-		logger.info(`Successfully deleted GCS file: ${gcsUri}`)
-	} catch (err) {
-		logger.error(`Failed to delete GCS file ${gcsUri}:`, err)
+		logger.info(
+			`Successfully deleted GCS file "${fileName}" from bucket "${BUCKET_NAME}"`
+		)
+	} catch (err: any) {
+		logger.error(
+			`Failed to delete GCS file "${fileName}" from bucket "${BUCKET_NAME}": ${err.message || err}`,
+			err
+		)
 		throw err
 	}
 }
