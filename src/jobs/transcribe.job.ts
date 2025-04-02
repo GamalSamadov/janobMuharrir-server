@@ -1,8 +1,11 @@
 // import { SecretManagerServiceClient } from '@google-cloud/secret-manager'
 import { spawn } from 'child_process'
 import ffmpeg from 'fluent-ffmpeg'
+// Use promises for async file operations
 import os from 'os'
+// To get temporary directory
 import path from 'path'
+// To join paths reliably
 import { performance } from 'perf_hooks'
 import { Readable } from 'stream'
 import { v4 as uuidv4 } from 'uuid'
@@ -30,36 +33,48 @@ import fs from 'fs/promises'
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms))
 
-// --- Helper: Fetch Secret (Example - Adapt to your setup) ---
-// const secretManager = new SecretManagerServiceClient()
-// async function getSecret(secretName: string): Promise<string | undefined> {
-// 	try {
-// 		const [version] = await secretManager.accessSecretVersion({
-// 			name: `projects/${process.env.GOOGLE_CLOUD_PROJECT_ID}/secrets/${secretName}/versions/latest`
-// 		})
-// 		const payload = version.payload?.data?.toString()
-// 		if (!payload) {
-// 			logger.warn(`Secret ${secretName} payload is empty.`)
-// 			return undefined
-// 		}
-// 		logger.info(`Successfully fetched secret: ${secretName}`)
-// 		return payload
-// 	} catch (error: any) {
-// 		logger.error(
-// 			{ error: error.message, secretName },
-// 			'Failed to fetch secret from Secret Manager.'
-// 		)
-// 		return undefined // Or throw if the secret is critical
-// 	}
-// }
-
-// --- Helper: Manage Temporary Cookie File ---
+// --- Helper: Manage Temporary Cookie File (Handles Base64 Decoding) ---
 async function useCookieFile(
-	cookieValue: string | undefined,
+	base64CookieValue: string | undefined, // Renamed to indicate expectation
 	logPrefix: string = 'yt-dlp'
 ): Promise<{ cookieFilePath?: string; cleanup: () => Promise<void> }> {
-	if (!cookieValue) {
+	if (!base64CookieValue) {
+		logger.warn(`${logPrefix}: No Base64 cookie value provided.`)
 		return { cleanup: async () => {} } // No cookie, nothing to do
+	}
+
+	let decodedCookieContent: string
+	try {
+		// --- Decode the Base64 content ---
+		decodedCookieContent = Buffer.from(
+			base64CookieValue,
+			'base64'
+		).toString('utf-8')
+		// --- End Decoding ---
+
+		// Basic sanity check for Netscape format (optional but helpful)
+		if (
+			!decodedCookieContent
+				.trim()
+				.startsWith('# Netscape HTTP Cookie File')
+		) {
+			logger.warn(
+				`${logPrefix}: Decoded cookie content does not appear to start with the expected Netscape header.`
+			)
+			// Consider throwing an error here if format is strictly required
+			// throw new Error("Decoded cookie content is not in expected Netscape format.");
+		}
+		logger.info(
+			`${logPrefix}: Successfully decoded Base64 cookie string (length: ${decodedCookieContent.length}).`
+		)
+	} catch (decodeError: any) {
+		logger.error(
+			{ error: decodeError.message },
+			`${logPrefix}: Failed to decode Base64 cookie string.`
+		)
+		throw new Error(
+			`Failed to decode Base64 cookie: ${decodeError.message}`
+		)
 	}
 
 	const tempDir = os.tmpdir() // Get system's temp directory (/tmp in Cloud Run)
@@ -73,9 +88,7 @@ async function useCookieFile(
 				`${logPrefix}: Successfully deleted temp cookie file: ${cookieFilePath}`
 			)
 		} catch (err: any) {
-			// Log error but don't fail the main process if cleanup fails
 			if (err.code !== 'ENOENT') {
-				// Ignore if file doesn't exist
 				logger.warn(
 					{ error: err.message, file: cookieFilePath },
 					`${logPrefix}: Failed to delete temp cookie file.`
@@ -85,28 +98,28 @@ async function useCookieFile(
 	}
 
 	try {
-		// Write the cookie value to the temp file (Netscape format is often preferred, but yt-dlp might handle simple text too)
-		// Ensure the cookieValue is in the correct format if needed. If it's just the 'Cookie: ...' header value, it might need processing.
-		// Assuming cookieValue is the raw content needed for the file.
-		await fs.writeFile(cookieFilePath, cookieValue, {
+		// Write the *decoded* Netscape format content to the file
+		await fs.writeFile(cookieFilePath, decodedCookieContent, {
 			encoding: 'utf-8',
-			mode: 0o600
-		}) // Set permissions
+			mode: 0o600 // Set permissions (read/write for owner only)
+		})
 		logger.info(
-			`${logPrefix}: Successfully created temp cookie file: ${cookieFilePath}`
+			`${logPrefix}: Successfully created temp cookie file from decoded Base64: ${cookieFilePath}`
 		)
 		return { cookieFilePath, cleanup }
-	} catch (err: any) {
+	} catch (writeErr: any) {
 		logger.error(
-			{ error: err.message, file: cookieFilePath },
+			{ error: writeErr.message, file: cookieFilePath },
 			`${logPrefix}: Failed to create temp cookie file.`
 		)
 		await cleanup() // Attempt cleanup even if creation failed
-		throw new Error(`Failed to write cookie file: ${err.message}`) // Re-throw to signal failure
+		throw new Error(
+			`Failed to write decoded cookie file: ${writeErr.message}`
+		)
 	}
 }
 
-// --- Helper Functions for yt-dlp (Modified) ---
+// --- Helper Functions for yt-dlp (Modified to use useCookieFile) ---
 interface VideoInfo {
 	title: string
 	duration: number // in seconds
@@ -114,35 +127,43 @@ interface VideoInfo {
 
 async function getVideoInfoWithYtDlp(
 	youtubeUrl: string,
-	cookie?: string
+	base64Cookie?: string // Expects Base64 encoded cookie string
 ): Promise<VideoInfo> {
 	let cookieHandler: {
 		cookieFilePath?: string
 		cleanup: () => Promise<void>
 	} | null = null
 	try {
-		cookieHandler = await useCookieFile(cookie, 'yt-dlp-info')
+		// Pass the Base64 string from ENV var to the helper
+		cookieHandler = await useCookieFile(base64Cookie, 'yt-dlp-info')
+
 		const args = [
 			'--no-warnings',
 			'--no-call-home',
 			'--ignore-config',
 			'--dump-json',
 			'--skip-download',
-			// '--force-ipv4', // Uncomment if IPv6 issues are suspected
+			// '--force-ipv4', // Uncomment if IPv6 issues are suspected on Cloud Run
 			youtubeUrl
 		]
 
 		if (cookieHandler.cookieFilePath) {
+			// Use the path to the file containing the *decoded* content
 			args.unshift('--cookies', cookieHandler.cookieFilePath)
-			logger.info('Using temp cookie file with yt-dlp info command.')
+			logger.info(
+				'Using temp cookie file (from decoded Base64) with yt-dlp info command.'
+			)
 		} else {
-			logger.warn('No YouTube cookie provided for yt-dlp info command.')
+			logger.warn(
+				'No YouTube cookie provided (or decode failed) for yt-dlp info command.'
+			)
 		}
 
 		logger.info(
 			`Spawning yt-dlp to get video info: yt-dlp ${args.join(' ')}`
 		)
 
+		// --- Promise wrapper for spawn remains the same ---
 		return await new Promise<VideoInfo>((resolve, reject) => {
 			const ytDlpProcess = spawn('yt-dlp', args)
 			let jsonData = ''
@@ -154,12 +175,19 @@ async function getVideoInfoWithYtDlp(
 			ytDlpProcess.stderr.on('data', data => {
 				const errLine = data.toString()
 				errorData += errLine
-				// Log stderr lines that aren't just warnings
 				if (!errLine.includes('WARNING:')) {
-					logger.warn(`yt-dlp info stderr: ${errLine.trim()}`)
+					// Still log non-warning stderr
+					// Avoid logging the specific "Sign in..." error repeatedly if it's the main issue
+					if (
+						!errLine.includes('Sign in to confirm') &&
+						!errLine.includes('confirm you')
+					) {
+						logger.warn(`yt-dlp info stderr: ${errLine.trim()}`)
+					}
 				}
 			})
 			ytDlpProcess.on('error', err => {
+				// Handle spawn errors (e.g., yt-dlp not found)
 				logger.error(
 					{ error: err },
 					'Failed to spawn yt-dlp process for info.'
@@ -169,35 +197,43 @@ async function getVideoInfoWithYtDlp(
 				)
 			})
 			ytDlpProcess.on('close', code => {
+				// Handle yt-dlp exit
 				if (code !== 0) {
 					logger.error(
-						`yt-dlp info process exited with code ${code}. Stderr: ${errorData}`
+						`yt-dlp info process exited with code ${code}. Stderr: ${errorData.substring(0, 1000)}` // Log more stderr on error
 					)
-					// Enhance error detection
 					let specificError = `yt-dlp info process exited with code ${code}.`
+					// Detect the specific bot/auth error
 					if (
-						errorData.includes('Private video') ||
-						errorData.includes('login required') ||
+						errorData.includes('Sign in to confirm') ||
 						errorData.includes('confirm your age') ||
+						errorData.includes('confirm you') || // Bot check variations
+						errorData.includes('login required') ||
+						errorData.includes('Private video') ||
 						errorData.includes('unavailable') ||
-						errorData.includes('Sign in') ||
 						errorData.includes('403') ||
-						errorData.includes('Premiere') ||
-						errorData.includes('confirm you') // For "confirm you're not a bot"
+						errorData.includes('Premiere')
 					) {
-						specificError = `YouTube access error (yt-dlp info): Video might be private/unavailable/premiere, require login/age confirmation, or cookie invalid/rejected. Code ${code}.`
+						specificError = `YouTube access error (yt-dlp info): Authentication failed or video requires login/confirmation (e.g., bot check, age gate, premiere, private). Likely invalid/expired/incomplete cookie, or IP flagged. Code ${code}.`
 					} else if (errorData.includes('ModuleNotFoundError')) {
-						specificError = `yt-dlp execution failed (ModuleNotFoundError). Ensure Python environment and yt-dlp installation are correct. Code ${code}.`
+						specificError = `yt-dlp execution failed (ModuleNotFoundError). Ensure Python environment and yt-dlp installation are correct in container. Code ${code}.`
+					}
+					// Add check for cookie decoding failure message if thrown earlier
+					else if (
+						errorData.includes('Failed to decode Base64 cookie')
+					) {
+						specificError = `Cookie handling error: Failed to decode Base64 cookie provided in environment variable. Code ${code}.`
 					}
 					reject(
 						new Error(
 							`${specificError} Stderr: ${errorData.substring(0, 500)}`
-						)
+						) // Keep error message concise for wrapper
 					)
 				} else {
+					// Success (code 0)
 					try {
+						// Parse JSON output
 						if (!jsonData) {
-							// ... (rest of the JSON parsing logic remains the same)
 							logger.error(
 								'yt-dlp info command closed successfully but produced no JSON output. Stderr: ' +
 									errorData
@@ -225,16 +261,15 @@ async function getVideoInfoWithYtDlp(
 						} else {
 							logger.error(
 								{ parsedJson: info },
-								'yt-dlp JSON missing title or duration, or invalid structure.'
+								'yt-dlp JSON missing title or duration.'
 							)
 							reject(
 								new Error(
-									'Failed to parse required title or duration from yt-dlp JSON.'
+									'Failed to parse title/duration from yt-dlp JSON.'
 								)
 							)
 						}
 					} catch (parseErr: any) {
-						// ... (rest of the JSON parsing logic remains the same)
 						logger.error(
 							{
 								error: parseErr,
@@ -252,8 +287,20 @@ async function getVideoInfoWithYtDlp(
 				}
 			})
 		})
+		// --- End Promise wrapper ---
+	} catch (err: any) {
+		// Catch errors from useCookieFile (e.g., Base64 decode failure)
+		logger.error(
+			{ error: err.message },
+			'Error during cookie file setup for yt-dlp info.'
+		)
+		// Ensure cleanup happens if handler was partially created
+		if (cookieHandler) {
+			await cookieHandler.cleanup()
+		}
+		throw err // Re-throw the error to be caught by the main job handler
 	} finally {
-		// Ensure cookie file is deleted
+		// Ensure cookie file is always deleted after the operation attempt
 		if (cookieHandler) {
 			await cookieHandler.cleanup()
 		}
@@ -264,86 +311,100 @@ async function streamAudioWithYtDlp(
 	youtubeUrl: string,
 	startTime: number,
 	duration: number,
-	cookie?: string
+	base64Cookie?: string // Expects Base64 encoded cookie string
 ): Promise<Readable> {
-	// Note: We need to manage the cookie file slightly differently for streaming
-	// because the cleanup should happen *after* the stream is fully consumed or errored.
-	// We'll create it here, pass the path, and rely on the caller or stream events for cleanup.
-	// Simpler approach for now: Create/cleanup within this function scope, assuming ffmpeg consumes it quickly.
-	// A more robust approach might involve passing the cleanup function back or managing it externally.
-
 	let cookieHandler: {
 		cookieFilePath?: string
 		cleanup: () => Promise<void>
 	} | null = null
 
 	try {
-		cookieHandler = await useCookieFile(cookie, 'yt-dlp-stream')
+		// Pass the Base64 string from ENV var to the helper
+		cookieHandler = await useCookieFile(base64Cookie, 'yt-dlp-stream')
 
 		const args = [
 			'--no-warnings',
 			'--no-call-home',
 			'--ignore-config',
 			'-f',
-			'bestaudio/best', // Fetch best audio quality
+			'bestaudio/best',
 			'--output',
-			'-', // Output to stdout
-			// '--force-ipv4', // Uncomment if IPv6 issues are suspected
-			// Use FFmpeg for seeking/duration via postprocessor args *if needed*,
-			// but yt-dlp can sometimes handle this directly depending on format.
-			// Using postprocessor args is generally reliable for precise segments.
+			'-',
+			// '--force-ipv4', // Consider uncommenting if persistent network/auth issues on Cloud Run
 			'--postprocessor-args',
-			`ffmpeg:-ss ${startTime} -to ${startTime + duration}`, // Use -to for more precise end time
-			// Alternative: Direct download range (might be less reliable)
-			// '--download-sections', `*${startTime}-${startTime + duration}`,
+			`ffmpeg:-ss ${startTime} -to ${startTime + duration}`,
 			youtubeUrl
 		]
 
 		if (cookieHandler.cookieFilePath) {
+			// Use the path to the file containing the *decoded* content
 			args.unshift('--cookies', cookieHandler.cookieFilePath)
-			logger.info('Using temp cookie file with yt-dlp stream command.')
+			logger.info(
+				'Using temp cookie file (from decoded Base64) with yt-dlp stream command.'
+			)
 		} else {
-			logger.warn('No YouTube cookie provided for yt-dlp stream command.')
+			logger.warn(
+				'No YouTube cookie provided (or decode failed) for yt-dlp stream command.'
+			)
 		}
 
 		logger.info(
 			`Spawning yt-dlp for audio segment: yt-dlp ${args.join(' ')}`
 		)
 		const ytDlpProcess = spawn('yt-dlp', args, {
-			stdio: ['ignore', 'pipe', 'pipe'] // stdin, stdout, stderr
+			stdio: ['ignore', 'pipe', 'pipe']
 		})
 
 		const outputAudioStream = ytDlpProcess.stdout
-		let stderrData = ''
+		let stderrData = '' // Accumulate stderr
+
+		// --- Stderr/Error/Close handlers remain largely the same, ---
+		// --- but ensure cleanup happens in close/error ---
 
 		ytDlpProcess.stderr.on('data', data => {
 			const errLine = data.toString()
 			stderrData += errLine
+			// Filter noisy ffmpeg/download progress, but keep other warnings/errors
 			if (
 				!errLine.includes('WARNING:') &&
-				!errLine.includes('Output stream #') && // Filter ffmpeg noise if it appears here
-				!errLine.includes('[download]') && // Filter download progress
-				!/frame=/.test(errLine) && // Filter ffmpeg progress
+				!errLine.includes('[download]') &&
+				!errLine.includes('Output stream #') &&
+				!/frame=/.test(errLine) &&
 				!/size=/.test(errLine) &&
 				!/time=/.test(errLine) &&
 				!/bitrate=/.test(errLine) &&
-				!/speed=/.test(errLine)
+				!/speed=/.test(errLine) &&
+				// Avoid logging the specific "Sign in..." error repeatedly
+				!errLine.includes('Sign in to confirm') &&
+				!errLine.includes('confirm you')
 			) {
 				logger.warn(`yt-dlp stream stderr: ${errLine.trim()}`)
 			}
 		})
 
 		ytDlpProcess.on('error', err => {
+			// Handle spawn errors
 			logger.error(
 				{ error: err, stderr: stderrData },
 				'Failed to spawn yt-dlp process for streaming.'
 			)
+			// Emit error on the stream *before* trying cleanup
 			outputAudioStream.emit(
 				'error',
 				new Error(
 					`Failed to start yt-dlp stream process: ${err.message}`
 				)
 			)
+			// Try cleanup immediately after emitting error
+			if (cookieHandler) {
+				cookieHandler.cleanup().catch(cleanupErr => {
+					logger.warn(
+						{ error: cleanupErr.message },
+						'Error during cleanup after yt-dlp spawn error'
+					)
+				})
+				cookieHandler = null // Prevent double cleanup
+			}
 		})
 
 		ytDlpProcess.on('close', async code => {
@@ -355,34 +416,46 @@ async function streamAudioWithYtDlp(
 			// --- End Cleanup ---
 
 			if (code !== 0) {
+				// Handle yt-dlp exit errors
 				const detailedErrorMessage = `yt-dlp stream process exited with error code ${code}. Stderr: ${stderrData.substring(0, 1000)}`
 				logger.error(detailedErrorMessage)
 				let specificError = detailedErrorMessage
+				// Detect common errors
 				if (stderrData.includes('ModuleNotFoundError')) {
 					specificError = `yt-dlp execution failed (ModuleNotFoundError). Check container setup. Code ${code}.`
 				} else if (
-					stderrData.includes('403 Forbidden') ||
-					stderrData.includes('Sign in') ||
+					stderrData.includes('Sign in to confirm') ||
 					stderrData.includes('confirm you') || // Bot check
-					stderrData.includes('login required')
+					stderrData.includes('login required') ||
+					stderrData.includes('403 Forbidden')
 				) {
-					specificError = `yt-dlp download failed (Authentication Error - 403/Login/Bot Check?). Check cookie validity/freshness. Code ${code}.`
-				} else if (stderrData.includes('Socket error')) {
+					specificError = `yt-dlp download failed (Authentication Error - e.g., 403/Login/Bot Check). Check cookie validity/freshness/completeness or IP reputation. Code ${code}.`
+				} else if (
+					stderrData.includes('Socket error') ||
+					stderrData.includes('timed out')
+				) {
 					specificError = `yt-dlp download failed (Network/Socket error). Code ${code}.`
+				}
+				// Check for cookie decoding failure message
+				else if (
+					stderrData.includes('Failed to decode Base64 cookie')
+				) {
+					specificError = `Cookie handling error: Failed to decode Base64 cookie provided in environment variable. Code ${code}.`
 				}
 				outputAudioStream.emit('error', new Error(specificError))
 			} else {
 				logger.info('yt-dlp stream process finished successfully.')
+				// Note: 'end' event on the stream signals completion of data transfer
 			}
 		})
 
-		// Handle potential errors on the stream itself after the process has started
+		// Handle errors emitted directly *by* the stream (less common for yt-dlp stdout)
 		outputAudioStream.on('error', async err => {
 			logger.error(
 				{ error: err },
 				'Error emitted directly on yt-dlp output stream.'
 			)
-			// Ensure cleanup happens if the stream errors *before* the process closes naturally
+			// Ensure cleanup happens if the stream errors *before* the process closes
 			if (cookieHandler) {
 				await cookieHandler.cleanup()
 				cookieHandler = null
@@ -391,16 +464,15 @@ async function streamAudioWithYtDlp(
 
 		return outputAudioStream
 	} catch (error: any) {
-		// Catch errors from useCookieFile
+		// Catch errors from useCookieFile (e.g., Base64 decode failure)
 		logger.error(
 			{ error: error.message },
-			'Error setting up yt-dlp stream (e.g., cookie file creation failed)'
+			'Error setting up yt-dlp stream (e.g., cookie file creation/decode failed)'
 		)
-		// Ensure cleanup if cookieHandler was partially created
 		if (cookieHandler) {
 			await cookieHandler.cleanup()
 		}
-		// Need to return a stream that immediately emits an error
+		// Return a stream that immediately emits the error
 		const errorStream = new Readable({
 			read() {
 				this.emit('error', error)
@@ -409,11 +481,7 @@ async function streamAudioWithYtDlp(
 		})
 		return errorStream
 	}
-	// Note: The 'finally' block here would run *before* the async operations inside 'close' or stream events.
-	// Cleanup is handled within the 'close' and 'error' handlers for the process/stream.
 }
-
-// --- Main Transcription Job Logic (Largely unchanged, but incorporating new yt-dlp calls) ---
 
 export async function pushTranscriptionEvent(
 	jobId: string,
@@ -430,6 +498,8 @@ export async function pushTranscriptionEvent(
 	}
 }
 
+// --- Main Transcription Job Logic ---
+
 export async function runTranscriptionJob(
 	jobId: string,
 	sessionId: string,
@@ -443,62 +513,61 @@ export async function runTranscriptionJob(
 
 	jobLogger.info('Starting transcription job...')
 
-	// --- TODO: Securely Fetch Cookie ---
-	// Option 1: From Env var (current)
-	const youtubeCookie = process.env.YOUTUBE_COOKIE
-	// Option 2: From Secret Manager (Recommended)
-	// const youtubeCookieSecretName = 'youtube-secret'
-	// const youtubeCookie = await getSecret(youtubeCookieSecretName)
-	// if (!youtubeCookie) {
-	// 	jobLogger.error(
-	// 		`Critical: YouTube cookie secret "${youtubeCookieSecretName}" not found or empty.`
-	// 	)
-	// 	await pushTranscriptionEvent(
-	// 		jobId,
-	// 		'Server konfiguratsiya xatosi: Cookie topilmadi.',
-	// 		true,
-	// 		broadcast
-	// 	)
-	// 	await transcriptService.error(jobId)
-	// 	return // Stop the job
-	// }
-	// -----------------------------------
+	// --- Fetch Base64 Encoded Cookie from Environment Variable ---
+	// IMPORTANT: The YOUTUBE_COOKIE env var MUST contain the Base64 encoded
+	//            content of a *valid* and *fresh* Netscape-formatted cookie file.
+	const base64YoutubeCookie = process.env.YOUTUBE_COOKIE
+	// ---
 
 	try {
+		// Log presence and length (safer than logging content)
+		if (base64YoutubeCookie) {
+			jobLogger.info(
+				`Found YOUTUBE_COOKIE environment variable (length: ${base64YoutubeCookie.length}). Expecting Base64 encoded Netscape format.`
+			)
+		} else {
+			jobLogger.warn(
+				'YOUTUBE_COOKIE environment variable is not set. yt-dlp might fail for private/restricted videos.'
+			)
+			// Decide if this is a fatal error for your use case:
+			// await pushTranscriptionEvent(jobId, 'Server konfiguratsiya xatosi: Cookie topilmadi.', true, broadcast);
+			// await transcriptService.error(jobId);
+			// return;
+		}
+
 		await transcriptService.running(jobId)
 		jobStatusUpdated = true
-		await delay(1000) // Give DB time
+		await delay(1000)
 
-		// --- Get Video Info ---
+		// --- Get Video Info (Pass Base64 Cookie) ---
 		let videoInfo: VideoInfo
-		jobLogger.info(
-			{
-				hasCookie: !!youtubeCookie,
-				cookieLength: youtubeCookie?.length ?? 0
-			},
-			'Checking YouTube cookie presence before yt-dlp info call'
-		)
-
 		try {
 			jobLogger.info(`Fetching video info via yt-dlp for URL: ${url}`)
-			// Pass the fetched/retrieved cookie string to the helper function
-			videoInfo = await getVideoInfoWithYtDlp(url, youtubeCookie)
+			videoInfo = await getVideoInfoWithYtDlp(url, base64YoutubeCookie)
 			jobLogger.info(
-				`Successfully fetched video info via yt-dlp for title: ${videoInfo.title}`
+				`Successfully fetched video info for title: ${videoInfo.title}`
 			)
 		} catch (err: any) {
 			jobLogger.error(
 				{ error: err.message, stack: err.stack, url: url },
 				'Failed to get video info from yt-dlp.'
 			)
+			// Refine error message for the user based on the specific yt-dlp error
 			let errorMessage = `Xatolik: Video ma'lumotlarini olib bo'lmadi (yt-dlp). URL, server yoki cookie'ni tekshiring. (${err.message || 'Unknown yt-dlp info error'})`
-			// Use the more specific error message from the helper
-			if (err.message?.includes('YouTube access error')) {
-				errorMessage = `Video ma'lumotlarini olib bo'lmadi (yt-dlp). YouTube kirish xatosi (maxfiy/yosh/bot tekshiruvi/cookie yaroqsiz?). (${err.message})`
+			if (
+				err.message?.includes('YouTube access error') ||
+				err.message?.includes('Authentication failed')
+			) {
+				errorMessage = `Video ma'lumotlarini olib bo'lmadi (yt-dlp). YouTube kirish xatosi (maxfiy/yosh/bot tekshiruvi?) yoki cookie yaroqsiz/to'liq emas. Cookie'ni yangilang. (${err.message})`
 			} else if (err.message?.includes('ModuleNotFoundError')) {
 				errorMessage = `Server xatosi: yt-dlp ishga tushmadi (ModuleNotFoundError). (${err.message})`
-			} else if (err.message?.includes('write cookie file')) {
-				errorMessage = `Server xatosi: Cookie faylini yozib bo'lmadi. (${err.message})`
+			} else if (
+				err.message?.includes('cookie file') ||
+				err.message?.includes('cookie handling error')
+			) {
+				errorMessage = `Server xatosi: Cookie faylini yozib/o'qib bo'lmadi. (${err.message})`
+			} else if (err.message?.includes('Failed to decode Base64')) {
+				errorMessage = `Server xatosi: Taqdim etilgan cookie (Base64) noto'g'ri formatda. (${err.message})`
 			}
 
 			await pushTranscriptionEvent(jobId, errorMessage, true, broadcast)
@@ -508,7 +577,7 @@ export async function runTranscriptionJob(
 		}
 		// --- End Get Video Info ---
 
-		// ... (Rest of the logic for title update, UI messages, segment calculation remains IDENTICAL) ...
+		// --- Title Update, Segment Calculation (No changes needed) ---
 		const title = videoInfo.title
 		const totalDuration = videoInfo.duration
 		if (isNaN(totalDuration) || totalDuration <= 0) {
@@ -528,7 +597,7 @@ export async function runTranscriptionJob(
 		} catch (updateErr: any) {
 			jobLogger.warn(
 				{ title, error: updateErr.message },
-				'Failed to update job title in database.'
+				'Failed to update job title.'
 			)
 		}
 		await pushTranscriptionEvent(
@@ -538,7 +607,7 @@ export async function runTranscriptionJob(
 			broadcast
 		)
 		await delay(500)
-		const segmentDuration = 150 // seconds per segment
+		const segmentDuration = 150
 		const numSegments = Math.ceil(totalDuration / segmentDuration)
 		await pushTranscriptionEvent(
 			jobId,
@@ -553,14 +622,11 @@ export async function runTranscriptionJob(
 			false,
 			broadcast
 		)
-
 		const editedTexts: string[] = []
 		let i = 0
 		const bucketName = process.env.GOOGLE_CLOUD_BUCKET_NAME
 		if (!bucketName) {
-			jobLogger.error(
-				'Missing GOOGLE_CLOUD_BUCKET_NAME environment variable.'
-			)
+			jobLogger.error('Missing GOOGLE_CLOUD_BUCKET_NAME env var.')
 			await pushTranscriptionEvent(
 				jobId,
 				'Server konfiguratsiya xatosi: Bucket topilmadi.',
@@ -571,6 +637,7 @@ export async function runTranscriptionJob(
 			jobStatusUpdated = true
 			return
 		}
+		// --- End Setup ---
 
 		// --- Segment Processing Loop ---
 		while (i < numSegments) {
@@ -580,15 +647,12 @@ export async function runTranscriptionJob(
 				segmentDuration,
 				totalDuration - segmentStartTime
 			)
-			// Ensure duration is positive, even for very short final segments
 			const safeActualDuration = Math.max(0.1, actualDuration)
-
-			const destFileName = `segment_${jobId}_${segmentNumber}.mp3` // Consistent definition
+			const destFileName = `segment_${jobId}_${segmentNumber}.mp3`
 			const gcsUri = `gs://${bucketName}/${destFileName}`
-
 			let segmentProcessedSuccessfully = false
 			let attempt = 0
-			const maxAttempts = 2 // Retry logic remains
+			const maxAttempts = 2
 
 			while (!segmentProcessedSuccessfully && attempt < maxAttempts) {
 				attempt++
@@ -596,7 +660,7 @@ export async function runTranscriptionJob(
 					segment: segmentNumber,
 					attempt
 				})
-				let gcsUploadSucceeded = false // Reset for each attempt
+				let gcsUploadSucceeded = false
 
 				if (attempt > 1) {
 					segmentLogger.warn(
@@ -608,7 +672,7 @@ export async function runTranscriptionJob(
 						false,
 						broadcast
 					)
-					await delay(1000 * attempt) // Simple backoff
+					await delay(1500 * attempt) // Exponential backoff-ish
 				}
 
 				try {
@@ -619,91 +683,78 @@ export async function runTranscriptionJob(
 						broadcast
 					)
 
-					// --- Stream Audio Segment (Use the updated function) ---
+					// --- Stream Audio Segment (Pass Base64 Cookie) ---
 					segmentLogger.info(
 						`Attempting segment download via yt-dlp (start: ${segmentStartTime}s, duration: ${safeActualDuration}s)...`
 					)
-					// Pass the cookie string here as well
 					const audioStream = await streamAudioWithYtDlp(
 						url,
 						segmentStartTime,
 						safeActualDuration,
-						youtubeCookie // Pass the cookie
+						base64YoutubeCookie // Pass the Base64 cookie
 					)
 
-					// --- Create ffmpeg command (No changes here needed) ---
+					// --- FFmpeg and Upload Promise (No changes needed) ---
 					segmentLogger.info(`Starting FFmpeg encoding...`)
 					const ffmpegCommand = ffmpeg(audioStream)
 						.format('mp3')
 						.audioCodec('libmp3lame')
-						.audioBitrate('96k') // Keep bitrate
-						// .audioQuality(undefined) // REMOVED - good
+						.audioBitrate('96k')
 						.on('start', cmd =>
 							segmentLogger.info(`FFmpeg started: ${cmd}`)
 						)
 						.on('error', (err, stdout, stderr) => {
-							// Log details on error event
 							segmentLogger.error(
 								{ message: err.message, stdout, stderr },
-								`FFmpeg error event processing segment (command level)`
+								`FFmpeg error event (command level)`
 							)
-							// Note: The promise rejection below handles control flow
 						})
-						.on('end', () => {
+						.on('end', () =>
 							segmentLogger.info(
 								`FFmpeg processing seemingly finished.`
-							) // Might fire even if upload fails later
-						})
+							)
+						)
 
-					// --- Wrap ffmpeg processing and upload in a Promise (No changes here needed) ---
 					await new Promise<void>((resolve, reject) => {
+						// ... Identical promise logic as before ...
 						const ffmpegOutputStream = ffmpegCommand.pipe()
-						let promiseRejected = false // Prevent double rejection
-
-						// Handle input stream errors (yt-dlp)
+						let promiseRejected = false
 						audioStream.on('error', inputError => {
+							// Handle yt-dlp stream errors
 							if (promiseRejected) return
 							promiseRejected = true
 							segmentLogger.error(
 								{ error: inputError.message },
-								'Error emitted on yt-dlp input stream for ffmpeg'
+								'Error on yt-dlp input stream for ffmpeg'
 							)
 							try {
-								// Attempt to kill ffmpeg if input fails
 								ffmpegCommand.kill('SIGKILL')
 							} catch (killErr: any) {
-								segmentLogger.warn(
-									{ error: killErr.message },
-									'Error trying to kill ffmpeg after input stream error'
-								)
+								/* ignore */
 							}
-							// Reject the promise wrapping ffmpeg/upload
 							reject(
 								new Error(
 									`Input stream error: ${inputError.message}`
 								)
 							)
 						})
-
-						// Handle ffmpeg's own errors more directly
 						ffmpegCommand.on('error', err => {
+							// Handle ffmpeg command errors
 							if (promiseRejected) return
 							promiseRejected = true
-							// Logged above by the other listener, just reject here
 							reject(
 								new Error(
 									`FFmpeg command failed directly: ${err.message}`
 								)
 							)
 						})
-
-						// Handle output stream errors (piping/upload issues)
 						ffmpegOutputStream.on('error', outputError => {
+							// Handle pipe/upload stream errors
 							if (promiseRejected) return
 							promiseRejected = true
 							segmentLogger.error(
 								{ error: outputError.message },
-								'Error emitted on ffmpeg output stream during upload pipe.'
+								'Error on ffmpeg output stream during upload'
 							)
 							reject(
 								new Error(
@@ -711,21 +762,18 @@ export async function runTranscriptionJob(
 								)
 							)
 						})
-
-						// Pipe ffmpeg output to GCS upload
-						uploadStreamToGCS(ffmpegOutputStream, destFileName)
+						uploadStreamToGCS(ffmpegOutputStream, destFileName) // Pipe to GCS
 							.then(() => {
 								if (!promiseRejected) {
-									gcsUploadSucceeded = true // Mark GCS upload as successful only if no prior errors
+									gcsUploadSucceeded = true
 									segmentLogger.info(
-										`Segment successfully encoded and uploaded to ${gcsUri}`
+										`Segment encoded and uploaded to ${gcsUri}`
 									)
-									resolve() // Success
+									resolve()
 								} else {
 									segmentLogger.warn(
-										'GCS upload technically finished, but an error occurred earlier in the ffmpeg/stream process.'
+										'GCS upload finished, but an earlier error occurred.'
 									)
-									// Do not resolve; let the existing rejection stand.
 								}
 							})
 							.catch(uploadErr => {
@@ -742,9 +790,9 @@ export async function runTranscriptionJob(
 								)
 							})
 					})
-					// --- End ffmpeg/upload Promise ---
+					// --- End FFmpeg / Upload ---
 
-					// --- Transcriptions & Editing (No changes needed here) ---
+					// --- Transcriptions & Editing (No changes needed) ---
 					await pushTranscriptionEvent(
 						jobId,
 						`Google matnni o'girmoqda ${segmentNumber}/${numSegments}...`,
@@ -753,19 +801,19 @@ export async function runTranscriptionJob(
 					)
 					const transcriptGoogle = await transcribeWithGoogle(gcsUri)
 					if (!transcriptGoogle) {
-						segmentLogger.error(
-							`Google transcription returned empty/null`
-						)
+						segmentLogger.error(`Google transcription empty`)
 						await pushTranscriptionEvent(
 							jobId,
-							`${segmentNumber}/${numSegments}-chi Google matnida xatolik (bo'sh natija). Qayta uriniladi...`,
+							`${segmentNumber}/${numSegments}-chi Google matnida xatolik (bo'sh natija).`,
 							false,
 							broadcast
-						)
-						continue // Trigger retry in the while loop
+						) // Don't retry endlessly for this
+						throw new Error(
+							'Google transcription returned empty result.'
+						) // Treat as segment failure
 					}
 					segmentLogger.info(`Google transcription done.`)
-
+					// --- ElevenLabs ---
 					await pushTranscriptionEvent(
 						jobId,
 						`ElevenLabs matnni o'girmoqda ${segmentNumber}/${numSegments}...`,
@@ -777,6 +825,10 @@ export async function runTranscriptionJob(
 						const stream11 = await getGCSFileStream(gcsUri)
 						transcriptElevenLabs =
 							await transcribeAudioElevenLabs(stream11)
+						if (!transcriptElevenLabs) {
+							throw new Error('ElevenLabs returned empty result.')
+						}
+						segmentLogger.info(`ElevenLabs transcription done.`)
 					} catch (elevenLabsError: any) {
 						segmentLogger.error(
 							{ error: elevenLabsError.message },
@@ -784,26 +836,13 @@ export async function runTranscriptionJob(
 						)
 						await pushTranscriptionEvent(
 							jobId,
-							`${segmentNumber}/${numSegments}-chi ElevenLabs matnida xatolik (${elevenLabsError.message}). Qayta uriniladi...`,
+							`${segmentNumber}/${numSegments}-chi ElevenLabs matnida xatolik (${elevenLabsError.message}).`,
 							false,
 							broadcast
 						)
-						continue // Trigger retry
+						throw elevenLabsError // Treat as segment failure
 					}
-					if (!transcriptElevenLabs) {
-						segmentLogger.error(
-							`ElevenLabs transcription returned empty/null`
-						)
-						await pushTranscriptionEvent(
-							jobId,
-							`${segmentNumber}/${numSegments}-chi ElevenLabs matnida xatolik (bo'sh natija). Qayta uriniladi...`,
-							false,
-							broadcast
-						)
-						continue // Trigger retry
-					}
-					segmentLogger.info(`ElevenLabs transcription done.`)
-
+					// --- Gemini Edit ---
 					await pushTranscriptionEvent(
 						jobId,
 						`Matnni Gemini tahrirlamoqda ${segmentNumber}/${numSegments}...`,
@@ -815,23 +854,21 @@ export async function runTranscriptionJob(
 						transcriptElevenLabs
 					)
 					if (!finalText) {
-						segmentLogger.error(
-							`Gemini editing returned empty/null`
-						)
+						segmentLogger.error(`Gemini editing returned empty`)
 						await pushTranscriptionEvent(
 							jobId,
-							`${segmentNumber}/${numSegments}-chi Gemini tahririda xatolik (bo'sh natija). Qayta uriniladi...`,
+							`${segmentNumber}/${numSegments}-chi Gemini tahririda xatolik (bo'sh natija).`,
 							false,
 							broadcast
 						)
-						continue // Trigger retry
+						throw new Error('Gemini editing returned empty result.') // Treat as segment failure
 					}
 					segmentLogger.info(`Gemini editing done.`)
 					// --- End Transcriptions & Editing ---
 
 					// --- Segment Success ---
 					editedTexts.push(finalText)
-					segmentProcessedSuccessfully = true // Mark success for this segment
+					segmentProcessedSuccessfully = true
 					await pushTranscriptionEvent(
 						jobId,
 						`${segmentNumber}/${numSegments}-chi bo'lak tayyor!`,
@@ -839,7 +876,6 @@ export async function runTranscriptionJob(
 						broadcast
 					)
 				} catch (segmentErr: any) {
-					// Log segment error (unchanged, but context helps)
 					segmentLogger.error(
 						{ error: segmentErr.message, stack: segmentErr.stack },
 						`Error processing segment ${segmentNumber} on attempt ${attempt}`
@@ -852,95 +888,118 @@ export async function runTranscriptionJob(
 					)
 
 					// --- Check for Fatal Errors ---
-					// Prioritize yt-dlp/stream errors as they are often unrecoverable without intervention (e.g., bad cookie)
+					// Prioritize unrecoverable errors like auth or setup failures
+					let isFatal = false
+					let fatalUserMsg = ''
+
 					if (
-						segmentErr.message?.includes('Input stream error:') || // Error reading from yt-dlp
-						segmentErr.message?.includes(
-							'yt-dlp stream process exited'
-						) || // yt-dlp process failed
-						segmentErr.message?.includes('403 Forbidden') || // Specific yt-dlp auth errors
-						segmentErr.message?.includes('Sign in') ||
-						segmentErr.message?.includes('confirm you') ||
+						segmentErr.message?.includes('Input stream error:') || // Error reading from yt-dlp stream
+						segmentErr.message?.includes('Authentication Error') || // Specific yt-dlp auth error
 						segmentErr.message?.includes('login required') ||
-						segmentErr.message?.includes('Authentication Error') || // Catch our specific message
+						segmentErr.message?.includes('Sign in to confirm') ||
+						segmentErr.message?.includes('confirm you') ||
+						segmentErr.message?.includes('403 Forbidden') ||
 						segmentErr.message?.includes('ModuleNotFoundError') || // yt-dlp didn't run
 						segmentErr.message?.includes(
+							'Failed to start yt-dlp'
+						) || // Spawn failed
+						segmentErr.message?.includes(
 							'cookie file creation failed'
-						) // Couldn't setup cookie
+						) || // Error writing temp file
+						segmentErr.message?.includes(
+							'Failed to decode Base64 cookie'
+						) // Error decoding cookie
 					) {
+						isFatal = true
 						segmentLogger.error(
-							'Fatal yt-dlp/stream related error occurred. Aborting job.'
+							'Fatal yt-dlp/stream/cookie related error occurred. Aborting job.'
 						)
-						let userMsg = `YouTube yuklashda/kirishda xatolik (yt-dlp ${segmentNumber}/${numSegments}). Cookie/URL/Video holatini tekshiring. Jarayon to'xtatildi.`
 						if (
-							segmentErr.message?.includes('ModuleNotFoundError')
+							segmentErr.message?.includes(
+								'Authentication Error'
+							) ||
+							segmentErr.message?.includes('Sign in')
 						) {
-							userMsg = `Server xatosi: yt-dlp ishga tushmadi (${segmentNumber}/${numSegments}). Jarayon to'xtatildi.`
+							fatalUserMsg = `YouTube yuklashda/kirishda xatolik (yt-dlp ${segmentNumber}/${numSegments}). Cookie yaroqsiz, to'liq emas yoki IP bloklangan bo'lishi mumkin. Cookie'ni yangilang. Jarayon to'xtatildi.`
 						} else if (
 							segmentErr.message?.includes(
-								'cookie file creation failed'
+								'ModuleNotFoundError'
+							) ||
+							segmentErr.message?.includes(
+								'Failed to start yt-dlp'
 							)
 						) {
-							userMsg = `Server xatosi: Cookie faylini sozlab bo'lmadi (${segmentNumber}/${numSegments}). Jarayon to'xtatildi.`
+							fatalUserMsg = `Server xatosi: yt-dlp ishga tushmadi (${segmentNumber}/${numSegments}). Jarayon to'xtatildi.`
+						} else if (
+							segmentErr.message?.includes('cookie file') ||
+							segmentErr.message?.includes('decode')
+						) {
+							fatalUserMsg = `Server xatosi: Cookie faylini sozlab/o'qib bo'lmadi (${segmentNumber}/${numSegments}). Jarayon to'xtatildi.`
+						} else {
+							fatalUserMsg = `YouTube yuklashda/kirishda noma'lum xatolik (yt-dlp ${segmentNumber}/${numSegments}). Jarayon to'xtatildi.`
 						}
-						await pushTranscriptionEvent(
-							jobId,
-							userMsg,
-							true,
-							broadcast
-						)
-						// Throw to exit the main try block
-						throw new Error(
-							`Aborting job due to fatal stream/auth failure on segment ${segmentNumber}: ${segmentErr.message}`
-						)
-					}
-					// Check for fatal ffmpeg errors
-					else if (
+					} else if (
 						segmentErr.message?.includes('FFmpeg command failed')
 					) {
+						isFatal = true
 						segmentLogger.error(
-							'Fatal FFmpeg error occurred during processing. Aborting job.'
+							'Fatal FFmpeg error occurred. Aborting job.'
 						)
-						await pushTranscriptionEvent(
-							jobId,
-							`Audio kodlashda xatolik (FFmpeg ${segmentNumber}/${numSegments}). Jarayon to'xtatildi.`,
-							true,
-							broadcast
-						)
-						// Throw to exit the main try block
-						throw new Error(
-							`Aborting job due to fatal FFmpeg failure on segment ${segmentNumber}: ${segmentErr.message}`
-						)
-					}
-					// Check for fatal GCS upload errors
-					else if (
+						fatalUserMsg = `Audio kodlashda xatolik (FFmpeg ${segmentNumber}/${numSegments}). Jarayon to'xtatildi.`
+					} else if (
 						segmentErr.message?.includes('GCS upload failed')
 					) {
+						isFatal = true
 						segmentLogger.error(
 							'Fatal GCS upload error occurred. Aborting job.'
 						)
+						fatalUserMsg = `Audio bo'lakni saqlashda xatolik (GCS ${segmentNumber}/${numSegments}). Jarayon to'xtatildi.`
+					}
+					// Treat transcription/editing errors as fatal for the segment now
+					else if (
+						segmentErr.message?.includes(
+							'transcription returned empty'
+						) ||
+						segmentErr.message?.includes(
+							'ElevenLabs returned empty'
+						) ||
+						segmentErr.message?.includes(
+							'Gemini editing returned empty'
+						) ||
+						segmentErr.message?.includes(
+							'ElevenLabs transcription failed'
+						)
+					) {
+						isFatal = true
+						segmentLogger.error(
+							`Fatal transcription/editing error: ${segmentErr.message}. Aborting job.`
+						)
+						fatalUserMsg = `Matnni o'girishda/tahrirlashda xatolik (${segmentNumber}/${numSegments}: ${segmentErr.message.substring(0, 80)}). Jarayon to'xtatildi.`
+					}
+
+					// If fatal, abort the job
+					if (isFatal) {
 						await pushTranscriptionEvent(
 							jobId,
-							`Audio bo'lakni saqlashda xatolik (GCS ${segmentNumber}/${numSegments}). Jarayon to'xtatildi.`,
+							fatalUserMsg,
 							true,
 							broadcast
 						)
-						// Throw to exit the main try block
+						// Throw to exit the main try block of the job
 						throw new Error(
-							`Aborting job due to fatal GCS upload failure on segment ${segmentNumber}: ${segmentErr.message}`
+							`Aborting job due to fatal error on segment ${segmentNumber}: ${segmentErr.message}`
 						)
 					}
 
-					// If not a fatal error, allow retry loop to continue after delay
-					await delay(2000 + attempt * 1000) // Slightly longer delay for retries
+					// If not fatal, allow retry loop to continue after delay
+					await delay(2000 + attempt * 1500) // Slightly longer delay
 				} finally {
-					// --- Cleanup GCS File ---
+					// --- Cleanup GCS File (No changes needed) ---
 					if (gcsUploadSucceeded) {
 						try {
-							// Check destFileName has a value - belt and suspenders
 							if (!destFileName) {
 								segmentLogger.error(
-									'destFileName was unexpectedly empty or undefined before GCS delete attempt!'
+									'destFileName empty before GCS delete!'
 								)
 							} else {
 								segmentLogger.info(
@@ -952,40 +1011,28 @@ export async function runTranscriptionJob(
 								)
 							}
 						} catch (deleteErr: any) {
-							// Log details but don't fail the job for cleanup error
 							segmentLogger.error(
 								{
 									error: deleteErr.message,
 									file: destFileName
 								},
-								`Failed to delete GCS segment file: ${destFileName}. Continuing job.`
+								`Failed to delete GCS segment file: ${destFileName}. Continuing.`
 							)
-							// Check for specific known issues if necessary
-							if (
-								deleteErr.message?.includes(
-									'file name must be specified'
-								)
-							) {
-								segmentLogger.error(
-									`Potential bug in deleteGCSFile or filename generation: ${deleteErr.message}`
-								)
-							}
 						}
 					} else {
-						// Log if deletion is skipped
 						if (destFileName) {
-							// Only log if we had a filename defined
 							segmentLogger.info(
-								`Skipping GCS delete for ${destFileName} because upload did not succeed or an earlier error occurred.`
+								`Skipping GCS delete for ${destFileName} (upload failed or error occurred).`
 							)
 						}
 					}
-					await delay(300) // Small delay after cleanup/skip
+					await delay(300)
 				}
-			} // End retry loop (while !segmentProcessedSuccessfully && attempt < maxAttempts)
+			} // End retry loop
 
-			// If segment failed after all attempts (unchanged)
+			// If segment failed after all attempts (should only happen if non-fatal errors persisted)
 			if (!segmentProcessedSuccessfully) {
+				// This path should ideally not be reached if we treat most errors as fatal now
 				jobLogger.error(
 					`Segment ${segmentNumber}/${numSegments} failed after ${maxAttempts} attempts. Aborting job.`
 				)
@@ -995,26 +1042,23 @@ export async function runTranscriptionJob(
 					true,
 					broadcast
 				)
-				// Throw to exit the main try block
 				throw new Error(
 					`Failed to process segment ${segmentNumber} after ${maxAttempts} attempts.`
 				)
 			}
 
 			i++ // Move to the next segment
-		} // End segment loop (while i < numSegments)
+		} // End segment loop
 
-		// --- Combine and Finalize (No changes needed here) ---
-		jobLogger.info(
-			`All ${numSegments} segments processed successfully. Combining...`
-		)
+		// --- Combine and Finalize (No changes needed) ---
+		jobLogger.info(`All ${numSegments} segments processed. Combining...`)
 		try {
 			await userSession.completed(sessionId)
-			jobLogger.info(`Marked session ${sessionId} as completed.`)
+			jobLogger.info(`Marked session ${sessionId} completed.`)
 		} catch (err: any) {
 			jobLogger.warn(
-				{ error: err.message, sessionId: sessionId },
-				`Could not mark session as completed`
+				{ error: err.message, sessionId },
+				`Could not mark session completed`
 			)
 		}
 		await pushTranscriptionEvent(
@@ -1026,7 +1070,7 @@ export async function runTranscriptionJob(
 		await delay(500)
 		const combinedResult = editedTexts
 			.join('\n\n')
-			.replace(/(\n\s*){3,}/g, '\n\n') // Clean up extra newlines
+			.replace(/(\n\s*){3,}/g, '\n\n')
 			.trim()
 		const duration = performance.now() - startTime
 		jobLogger.info(`Job completed in ${formatDuration(duration)}`)
@@ -1038,74 +1082,71 @@ export async function runTranscriptionJob(
 		)
 		await delay(500)
 		const finalTitle = videoInfo.title || "Noma'lum Sarlavha"
-		// Construct final HTML output
 		const finalTranscript = `<i style="display: block; font-style: italic; text-align: center;">🕒 Transkripsiya uchun ${formatDuration(duration)} vaqt ketdi.</i><h1 style="font-weight: 700; font-size: 1.8rem; margin: 1rem 0; text-align: center; line-height: 1;">${finalTitle}</h1>\n\n<p style="text-indent: 30px;">${convertToUzbekLatin(combinedResult)}</p>`
-
 		await transcriptService.saveFinalTranscript(jobId, finalTranscript)
 		jobLogger.info(`Final transcript saved.`)
-		await pushTranscriptionEvent(jobId, finalTranscript, true, broadcast) // Send final result and mark completed
-		jobStatusUpdated = true // Mark status update happened successfully
+		await pushTranscriptionEvent(jobId, finalTranscript, true, broadcast)
+		jobStatusUpdated = true
 	} catch (err: any) {
-		// --- Final Error Handling (Adjusted for new error types) ---
+		// --- Final Error Handling ---
 		jobLogger.error(
 			{ error: err.message, stack: err.stack },
 			'Critical error in runTranscriptionJob'
 		)
-
-		// Ensure job status is marked as error if it hasn't been updated yet
 		if (!jobStatusUpdated) {
 			try {
 				await transcriptService.error(jobId)
-				jobStatusUpdated = true // Mark it now
+				jobStatusUpdated = true
 			} catch (dbErr: any) {
 				jobLogger.error(
 					{ error: dbErr.message },
-					'Failed to mark job as error in DB during final catch block'
+					'Failed to mark job as error in final catch block'
 				)
 			}
 		}
-
-		// Send a final error message to the client via SSE
 		if (broadcast) {
 			try {
-				// Provide more specific user-facing error messages based on the caught error
-				let clientErrorMessage = `Serverda kutilmagan xatolik yuz berdi. (${err.message?.substring(0, 100) || 'No details'}...)`
-
+				// Use the message thrown by the fatal error logic if available
+				let clientErrorMessage = `Serverda kutilmagan xatolik: (${err.message?.substring(0, 100) || 'No details'}...)`
 				if (
-					err.message?.includes(
-						'Aborting job due to fatal stream/auth failure'
-					)
+					err.message?.startsWith('Aborting job due to fatal error')
 				) {
-					clientErrorMessage = `Xatolik: YouTube'dan yuklab bo'lmadi yoki kirishda muammo (maxfiy/yosh/bot/cookie?/server xato?). Jarayon to'xtatildi. (${err.message?.substring(0, 100)}...)`
+					// Extract the user-facing message we prepared earlier if possible
+					const nestedError = err.message
+						.split(': ')
+						.slice(1)
+						.join(': ')
+					// Re-check the nested error message for keywords
+					if (
+						nestedError.includes('Authentication Error') ||
+						nestedError.includes('Sign in')
+					) {
+						clientErrorMessage = `YouTube yuklashda/kirishda xatolik. Cookie yaroqsiz, to'liq emas yoki IP bloklangan bo'lishi mumkin. Cookie'ni yangilang. Jarayon to'xtatildi.`
+					} else if (nestedError.includes('FFmpeg')) {
+						clientErrorMessage = `Audio kodlashda xatolik (FFmpeg). Jarayon to'xtatildi.`
+					} else if (nestedError.includes('GCS upload')) {
+						clientErrorMessage = `Audio bo'lakni saqlashda xatolik (GCS). Jarayon to'xtatildi.`
+					} else if (
+						nestedError.includes('cookie file') ||
+						nestedError.includes('decode')
+					) {
+						clientErrorMessage = `Server xatosi: Cookie faylini sozlab/o'qib bo'lmadi. Jarayon to'xtatildi.`
+					} else if (
+						nestedError.includes('transcription') ||
+						nestedError.includes('ElevenLabs') ||
+						nestedError.includes('Gemini')
+					) {
+						clientErrorMessage = `Matnni o'girishda/tahrirlashda xatolik. Jarayon to'xtatildi. (${nestedError.substring(0, 80)})`
+					}
+					// Fallback to the thrown error message if none of the above match well
+					else {
+						clientErrorMessage = err.message
+					}
 				} else if (
-					err.message?.includes(
-						'Aborting job due to fatal FFmpeg failure'
-					)
+					err.message?.includes("Video ma'lumotlarini olib bo'lmadi")
 				) {
-					clientErrorMessage = `Xatolik: Audio faylni kodlashda muammo (FFmpeg). Jarayon to'xtatildi. (${err.message?.substring(0, 100)}...)`
-				} else if (
-					err.message?.includes(
-						'Aborting job due to fatal GCS upload failure'
-					)
-				) {
-					clientErrorMessage = `Xatolik: Audio bo'lakni bulutga saqlashda muammo (GCS). Jarayon to'xtatildi. (${err.message?.substring(0, 100)}...)`
-				} else if (err.message?.includes('Failed to process segment')) {
-					// Error from segment retry exhaustion
-					clientErrorMessage = `Xatolik: ${err.message}` // Use the specific message
-				} else if (
-					err.message?.includes('yt-dlp info process exited')
-				) {
-					// Error from initial info fetch
-					clientErrorMessage = `Xatolik: Video ma'lumotlarini olib bo'lmadi (yt-dlp). URL/Cookie/Video holatini tekshiring. (${err.message?.substring(0, 100)}...)`
-				} else if (
-					err.message?.includes('GOOGLE_CLOUD_BUCKET_NAME') ||
-					err.message?.includes('Bucket topilmadi')
-				) {
-					clientErrorMessage = `Server konfiguratsiya xatosi: Bucket topilmadi.`
-				} else if (err.message?.includes('Cookie topilmadi')) {
-					clientErrorMessage = `Server konfiguratsiya xatosi: Cookie topilmadi.`
-				} else if (err.message?.includes('cookie file')) {
-					clientErrorMessage = `Server xatosi: Cookie fayl bilan ishlashda muammo. (${err.message?.substring(0, 100)}...)`
+					// Error during initial info fetch
+					clientErrorMessage = err.message // Use the message already prepared
 				}
 
 				await pushTranscriptionEvent(
@@ -1123,8 +1164,5 @@ export async function runTranscriptionJob(
 		}
 	} finally {
 		jobLogger.info('Transcription job finished execution.')
-		// Final cleanup attempt for any lingering cookie files (should be handled earlier, but as a safeguard)
-		// Note: This might not be effective if cookieHandler scope was lost due to errors.
-		// The cleanup within the specific yt-dlp function calls is more reliable.
 	}
 }
