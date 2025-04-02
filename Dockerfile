@@ -9,6 +9,7 @@ WORKDIR /app
 
 COPY package.json yarn.lock ./
 
+# Use --frozen-lockfile for consistency
 RUN yarn install --frozen-lockfile
 
 COPY . .
@@ -21,13 +22,13 @@ FROM node:20.12.2-slim AS production
 
 ENV NODE_ENV="production"
 
+
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ffmpeg \
     python3 \
     python3-pip \
-    && python3 -m pip install --no-cache-dir --upgrade pip \
-    && python3 -m pip install --no-cache-dir --upgrade yt-dlp --break-system-packages \
+    && pip install --no-cache-dir --upgrade yt-dlp --break-system-packages \
     && rm -rf /var/lib/apt/lists/*
 
 
