@@ -130,6 +130,9 @@ async function getVideoInfoWithYtDlp(
 			'--dump-json',
 			'--skip-download',
 			// '--force-ipv4', // Uncomment if IPv6 issues are suspected
+			'--user-agent',
+			'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36', // Example UA
+
 			youtubeUrl
 		]
 
@@ -298,6 +301,9 @@ async function streamAudioWithYtDlp(
 			`ffmpeg:-ss ${startTime} -to ${startTime + duration}`, // Use -to for more precise end time
 			// Alternative: Direct download range (might be less reliable)
 			// '--download-sections', `*${startTime}-${startTime + duration}`,
+			'--user-agent',
+			'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36', // Example UA
+
 			youtubeUrl
 		]
 
