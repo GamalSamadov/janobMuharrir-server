@@ -129,9 +129,11 @@ async function getVideoInfoWithYtDlp(
 			'--ignore-config',
 			'--dump-json',
 			'--skip-download',
-			// '--force-ipv4', // Uncomment if IPv6 issues are suspected
+			'--force-ipv4', // Uncomment if IPv6 issues are suspected
 			'--user-agent',
 			'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+			'--cookies-from-browser',
+			'chrome', // Use cookies from Chrome browser
 
 			youtubeUrl
 		]
@@ -289,11 +291,15 @@ async function streamAudioWithYtDlp(
 			'--no-warnings',
 			'--no-call-home',
 			'--ignore-config',
+			'--user-agent',
+			'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+			'--cookies-from-browser',
+			'chrome', // Use cookies from Chrome browser
 			'-f',
 			'bestaudio/best', // Fetch best audio quality
 			'--output',
 			'-', // Output to stdout
-			// '--force-ipv4', // Uncomment if IPv6 issues are suspected
+			'--force-ipv4', // Uncomment if IPv6 issues are suspected
 			// Use FFmpeg for seeking/duration via postprocessor args *if needed*,
 			// but yt-dlp can sometimes handle this directly depending on format.
 			// Using postprocessor args is generally reliable for precise segments.
@@ -301,9 +307,6 @@ async function streamAudioWithYtDlp(
 			`ffmpeg:-ss ${startTime} -to ${startTime + duration}`, // Use -to for more precise end time
 			// Alternative: Direct download range (might be less reliable)
 			// '--download-sections', `*${startTime}-${startTime + duration}`,
-			'--user-agent',
-			'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-
 			youtubeUrl
 		]
 
