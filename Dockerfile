@@ -14,7 +14,6 @@ RUN yarn prisma generate
 
 RUN yarn build
 
-
 FROM node:20 AS production
 
 ENV NODE_ENV="production"

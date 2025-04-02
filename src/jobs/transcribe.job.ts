@@ -1,6 +1,5 @@
 import ytdl from '@distube/ytdl-core'
 import ffmpeg from 'fluent-ffmpeg'
-import fs from 'fs'
 import { performance } from 'perf_hooks'
 
 import {
@@ -28,7 +27,7 @@ const agent = ytdl.createAgent([
 		expirationDate: 1234567890,
 		hostOnly: false,
 		httpOnly: true,
-		name: 'Cookie',
+		name: 'cookie',
 		path: '/',
 		sameSite: 'no_restriction',
 		secure: true,
