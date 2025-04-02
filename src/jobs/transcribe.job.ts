@@ -123,6 +123,7 @@ async function getVideoInfoWithYtDlp(
 	try {
 		cookieHandler = await useCookieFile(cookie, 'yt-dlp-info')
 		const args = [
+			'-v',
 			'--no-warnings',
 			'--no-call-home',
 			'--ignore-config',
@@ -281,6 +282,7 @@ async function streamAudioWithYtDlp(
 		cookieHandler = await useCookieFile(cookie, 'yt-dlp-stream')
 
 		const args = [
+			'-v',
 			'--no-warnings',
 			'--no-call-home',
 			'--ignore-config',
