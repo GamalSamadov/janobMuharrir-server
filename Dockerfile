@@ -29,6 +29,7 @@ RUN apt-get update && \
     python3 \
     python3-pip \
     && pip install --no-cache-dir --upgrade yt-dlp --break-system-packages \
+    && yt-dlp -U \
     && rm -rf /var/lib/apt/lists/*
 
 

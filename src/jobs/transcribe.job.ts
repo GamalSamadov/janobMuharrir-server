@@ -123,27 +123,16 @@ async function getVideoInfoWithYtDlp(
 	try {
 		cookieHandler = await useCookieFile(cookie, 'yt-dlp-info')
 		const args = [
-			'-v',
 			'--no-warnings',
 			'--no-call-home',
 			'--ignore-config',
 			'--dump-json',
 			'--skip-download',
 			'--force-ipv4', // Uncomment if IPv6 issues are suspected
-			'--user-agent',
-			'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
 			'--cookies-from-browser',
 			'chrome', // Use cookies from Chrome browser
-
 			youtubeUrl
 		]
-
-		if (cookieHandler.cookieFilePath) {
-			args.unshift('--cookies', cookieHandler.cookieFilePath)
-			logger.info('Using temp cookie file with yt-dlp info command.')
-		} else {
-			logger.warn('No YouTube cookie provided for yt-dlp info command.')
-		}
 
 		logger.info(
 			`Spawning yt-dlp to get video info: yt-dlp ${args.join(' ')}`
@@ -287,12 +276,9 @@ async function streamAudioWithYtDlp(
 		cookieHandler = await useCookieFile(cookie, 'yt-dlp-stream')
 
 		const args = [
-			'-v',
 			'--no-warnings',
 			'--no-call-home',
 			'--ignore-config',
-			'--user-agent',
-			'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
 			'--cookies-from-browser',
 			'chrome', // Use cookies from Chrome browser
 			'-f',
@@ -309,13 +295,6 @@ async function streamAudioWithYtDlp(
 			// '--download-sections', `*${startTime}-${startTime + duration}`,
 			youtubeUrl
 		]
-
-		if (cookieHandler.cookieFilePath) {
-			args.unshift('--cookies', cookieHandler.cookieFilePath)
-			logger.info('Using temp cookie file with yt-dlp stream command.')
-		} else {
-			logger.warn('No YouTube cookie provided for yt-dlp stream command.')
-		}
 
 		logger.info(
 			`Spawning yt-dlp for audio segment: yt-dlp ${args.join(' ')}`
