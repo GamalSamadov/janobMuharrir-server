@@ -68,6 +68,8 @@ export async function runTranscriptionJob(
 
 	await transcriptService.running(jobId)
 
+	await delay(1000)
+
 	const info = await ytdl.getInfo(url, ytdlOptions)
 	const title = info.videoDetails.title
 	const totalDuration = parseFloat(info.videoDetails.lengthSeconds)
