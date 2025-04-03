@@ -2,7 +2,14 @@
     FROM node:20.12.2-slim AS build
 
     # Install git only needed if you have git dependencies in package.json
-    # RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+    RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ffmpeg \
+    python3 \
+    python3-pip \
+    # Add any other essential runtime OS packages here (e.g., ca-certificates, dumb-init)
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*    
     
     WORKDIR /app
     
@@ -26,7 +33,7 @@
     ENV NODE_ENV="production"
     
     # Install only ffmpeg - youtube-dl-exec handles yt-dlp binary download
-    RUN apt-get update && \
+RUN apt-get update && \
         apt-get install -y --no-install-recommends \
         ffmpeg \
         python3 \
