@@ -44,67 +44,46 @@ async function createAgentWithCookies(
 	logPrefix: string
 ): Promise<HttpsProxyAgent | undefined> {
 	let agent: HttpsProxyAgent | undefined = undefined
-	logger.info(
-		`${logPrefix}: Attempting to read cookie file at ${persistentCookieFilePath}`
-	) // Log path
 	try {
+		// Check if the persistent cookie file exists and is readable and not empty
 		const cookieFileContent = await fs.readFile(
 			persistentCookieFilePath,
 			'utf-8'
 		)
 		if (cookieFileContent.trim().length > 0) {
-			logger.info(
-				`${logPrefix}: Cookie file found and is not empty. Parsing...`
-			)
 			const jar = new CookieJar()
+			// Parse Netscape cookie file format asynchronously
+			// tough-cookie doesn't have a built-in async file parser, so we read it first
 			const lines = cookieFileContent.split('\n')
-			let parsedCookieCount = 0
 			for (const line of lines) {
-				const trimmedLine = line.trim()
-				if (trimmedLine && !trimmedLine.startsWith('#')) {
-					// Ignore empty lines and comments
-					// logger.debug(`${logPrefix}: Attempting to parse cookie line: ${trimmedLine}`); // Can be very verbose
-					try {
-						// Provide a default URL, the domain from the cookie line overrides it
-						await jar.setCookie(
-							trimmedLine,
-							'https://www.youtube.com'
-						)
-						parsedCookieCount++
-					} catch (cookieParseError: any) {
-						logger.warn(
-							{
-								error: cookieParseError.message,
-								line: trimmedLine
-							},
-							`${logPrefix}: Failed to parse cookie line, skipping.`
-						)
-					}
+				// Basic parsing - assumes standard Netscape format lines
+				// More robust parsing might be needed for complex cookies
+				try {
+					// Let tough-cookie handle parsing each line
+					// Need to provide a dummy URL, the domain from the cookie file takes precedence
+					await jar.setCookie(line.trim(), 'https://www.youtube.com')
+				} catch (cookieParseError: any) {
+					// Log individual cookie parsing errors but continue
+					logger.warn(
+						{ error: cookieParseError.message, line: line.trim() },
+						`${logPrefix}: Failed to parse cookie line, skipping.`
+					)
 				}
 			}
-			logger.info(
-				`${logPrefix}: Parsed ${parsedCookieCount} cookie lines.`
-			)
 
-			if (parsedCookieCount > 0) {
-				agent = new HttpsProxyAgent({
-					keepAlive: true,
-					keepAliveMsecs: 1000,
-					maxSockets: 256,
-					maxFreeSockets: 256,
-					scheduling: 'lifo',
-					proxy: undefined,
-					// @ts-ignore
-					cookieJar: jar
-				})
-				logger.info(
-					`${logPrefix}: Created HttpsProxyAgent with cookies.`
-				)
-			} else {
-				logger.warn(
-					`${logPrefix}: Cookie file was read, but no valid cookie lines were parsed.`
-				)
-			}
+			agent = new HttpsProxyAgent({
+				keepAlive: true,
+				keepAliveMsecs: 1000,
+				maxSockets: 256,
+				maxFreeSockets: 256,
+				scheduling: 'lifo',
+				proxy: undefined, // No proxy needed here
+				// @ts-ignore // tough-cookie's CookieJar type might not perfectly match agent's expectation initially
+				cookieJar: jar // Pass the populated cookie jar
+			})
+			logger.info(
+				`${logPrefix}: Using persistent cookie file: ${persistentCookieFilePath}`
+			)
 		} else {
 			logger.warn(
 				`${logPrefix}: Persistent cookie file exists but is EMPTY: ${persistentCookieFilePath}. Proceeding without cookies.`
@@ -117,11 +96,7 @@ async function createAgentWithCookies(
 			)
 		} else {
 			logger.error(
-				{
-					error: statErr.message,
-					code: statErr.code,
-					file: persistentCookieFilePath
-				}, // Log error code
+				{ error: statErr, file: persistentCookieFilePath },
 				`${logPrefix}: Failed to read/process persistent cookie file. Proceeding without cookies.`
 			)
 		}

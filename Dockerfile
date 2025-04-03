@@ -5,9 +5,6 @@
     RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ffmpeg \
-    python3 \
-    python3-pip \
-    # Add any other essential runtime OS packages here (e.g., ca-certificates, dumb-init)
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*    
     
@@ -36,9 +33,6 @@
 RUN apt-get update && \
         apt-get install -y --no-install-recommends \
         ffmpeg \
-        python3 \
-        python3-pip \
-        # Add any other essential runtime OS packages here (e.g., ca-certificates, dumb-init)
         ca-certificates \
         && rm -rf /var/lib/apt/lists/*
     
