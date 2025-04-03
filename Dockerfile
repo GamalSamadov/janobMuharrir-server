@@ -4,6 +4,8 @@ WORKDIR /app
 
 COPY package.json yarn.lock ./
 
+ENV YOUTUBE_DL_SKIP_PYTHON_CHECK=1
+
 RUN yarn install --frozen-lockfile
 
 COPY . .
