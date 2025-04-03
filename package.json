@@ -23,10 +23,12 @@
 	},
 	"homepage": "https://github.com/GamalSamadov/janobMuharrir-server#readme",
 	"dependencies": {
+		"@distube/ytdl-core": "^4.16.6",
 		"@google-cloud/speech": "^7.0.1",
 		"@google-cloud/storage": "^7.16.0",
 		"@google/generative-ai": "^0.24.0",
 		"@prisma/client": "^6.5.0",
+		"@ybd-project/ytdl-core": "^6.0.8",
 		"argon2": "^0.41.1",
 		"class-validator": "^0.14.1",
 		"cookie-parser": "^1.4.7",
@@ -45,8 +47,7 @@
 		"pino-pretty": "^13.0.0",
 		"tough-cookie": "^5.1.2",
 		"tsconfig-paths": "^4.2.0",
-		"uuid": "^11.1.0",
-		"ytdl-core": "^4.11.5"
+		"uuid": "^11.1.0"
 	},
 	"devDependencies": {
 		"@trivago/prettier-plugin-sort-imports": "^5.2.2",
