@@ -1,12 +1,8 @@
 import ffmpeg from 'fluent-ffmpeg'
-import os from 'os'
 import path from 'path'
 import { performance } from 'perf_hooks'
 import { Readable } from 'stream'
-import { v4 as uuidv4 } from 'uuid'
 import { exec } from 'youtube-dl-exec'
-
-// Import youtube-dl-exec
 
 import {
 	convertToUzbekLatin,
@@ -29,105 +25,55 @@ import fs from 'fs/promises'
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms))
 
-// --- Helper: Manage Temporary Cookie File ---
-async function useCookieFile(
-	cookieValue: string | undefined,
-	logPrefix: string = 'ytdl'
-): Promise<{ cookieFilePath?: string; cleanup: () => Promise<void> }> {
-	if (!cookieValue || cookieValue.trim().length === 0) {
-		logger.info(`${logPrefix}: No valid cookie value provided.`)
-		return { cleanup: async () => {} }
-	}
+const persistentCookieFilePath = path.join(__dirname, 'cookies.txt')
 
-	const tempDir = os.tmpdir()
-	const uniqueId = uuidv4()
-	const cookieFilePath = path.join(tempDir, `youtube_cookies_${uniqueId}.txt`)
-
-	const cleanup = async () => {
-		try {
-			await fs.unlink(cookieFilePath)
-			logger.info(
-				`${logPrefix}: Deleted temp cookie file: ${cookieFilePath}`
-			)
-		} catch (err: any) {
-			if (err.code !== 'ENOENT') {
-				logger.warn(
-					{ error: err.message, file: cookieFilePath },
-					`${logPrefix}: Failed to delete temp cookie file.`
-				)
-			}
-		}
-	}
-
-	try {
-		const sanitizedCookieValue = cookieValue.trimEnd() + '\n'
-		await fs.writeFile(cookieFilePath, sanitizedCookieValue, {
-			encoding: 'utf-8',
-			mode: 0o600
-		}) // Set secure permissions
-		logger.info(`${logPrefix}: Created temp cookie file: ${cookieFilePath}`)
-		return { cookieFilePath, cleanup }
-	} catch (err: any) {
-		logger.error(
-			{ error: err.message, file: cookieFilePath },
-			`${logPrefix}: Failed to create temp cookie file.`
-		)
-		await cleanup() // Attempt cleanup
-		throw new Error(`Failed to write cookie file: ${err.message}`)
-	}
-}
-
-// --- Helper Functions using youtube-dl-exec ---
 interface VideoInfo {
 	title: string
-	duration: number // in seconds
+	duration: number
 }
 
-async function getVideoInfoWithYtdl(
-	youtubeUrl: string,
-	cookie?: string
-): Promise<VideoInfo> {
+async function getVideoInfoWithYtdl(youtubeUrl: string): Promise<VideoInfo> {
 	const logPrefix = 'ytdl-info'
-	let cookieHandler: {
-		cookieFilePath?: string
-		cleanup: () => Promise<void>
-	} | null = null
 	logger.info(
-		`${logPrefix}: Fetching info for ${youtubeUrl}. Cookie provided: ${!!cookie}`
+		`${logPrefix}: Fetching info for ${youtubeUrl}. Attempting to use cookies from ${persistentCookieFilePath}`
 	)
 
+	const options: any = {
+		noWarnings: true,
+		noCallHome: true,
+		ignoreConfig: true,
+		dumpJson: true,
+		skipDownload: true,
+		forceIpv4: true
+	}
+
 	try {
-		cookieHandler = await useCookieFile(cookie, logPrefix)
-		const options: any = {
-			noWarnings: true,
-			noCallHome: true,
-			ignoreConfig: true,
-			dumpJson: true,
-			skipDownload: true,
-			forceIpv4: true
+		// Check if the persistent cookie file exists and is not empty
+		const stats = await fs.stat(persistentCookieFilePath)
+		if (stats.size > 0) {
+			options.cookies = persistentCookieFilePath
+			logger.info(
+				`${logPrefix}: Using persistent cookie file: ${persistentCookieFilePath}`
+			)
+		} else {
+			logger.warn(
+				`${logPrefix}: Persistent cookie file exists but is EMPTY: ${persistentCookieFilePath}. Proceeding without --cookies.`
+			)
 		}
-
-		if (cookieHandler.cookieFilePath) {
-			try {
-				const stats = await fs.stat(cookieHandler.cookieFilePath)
-				if (stats.size > 0) {
-					options.cookies = cookieHandler.cookieFilePath
-					logger.info(
-						`${logPrefix}: Using cookie file: ${cookieHandler.cookieFilePath}`
-					)
-				} else {
-					logger.warn(
-						`${logPrefix}: Cookie file exists but is EMPTY: ${cookieHandler.cookieFilePath}. Proceeding without --cookies.`
-					)
-				}
-			} catch (statErr: any) {
-				logger.error(
-					{ error: statErr, file: cookieHandler.cookieFilePath },
-					`${logPrefix}: Failed to stat cookie file. Proceeding without --cookies.`
-				)
-			}
+	} catch (statErr: any) {
+		if (statErr.code === 'ENOENT') {
+			logger.info(
+				`${logPrefix}: Persistent cookie file not found at ${persistentCookieFilePath}. Proceeding without --cookies.`
+			)
+		} else {
+			logger.error(
+				{ error: statErr, file: persistentCookieFilePath },
+				`${logPrefix}: Failed to stat persistent cookie file. Proceeding without --cookies.`
+			)
 		}
+	}
 
+	try {
 		logger.info(`${logPrefix}: Executing youtube-dl-exec with options...`)
 		const result = await exec(youtubeUrl, options)
 
@@ -168,75 +114,71 @@ async function getVideoInfoWithYtdl(
 			stderr.includes('Premiere') ||
 			stderr.includes('confirm you')
 		) {
-			specificError = `YouTube access error (yt-dlp info): Video might be private/unavailable/premiere, require login/age/bot confirmation, or cookie invalid/expired/rejected. Code ${exitCode}.`
+			specificError = `YouTube access error (yt-dlp info): Video might be private/unavailable/premiere, require login/age/bot confirmation, or cookie file (${persistentCookieFilePath}) is invalid/expired/rejected. Code ${exitCode}.`
 		} else if (stderr.includes('unable to download video data')) {
-			specificError = `yt-dlp info failed: Unable to download video data. Check URL/Network/Cookie. Code ${exitCode}.`
+			specificError = `yt-dlp info failed: Unable to download video data. Check URL/Network/Cookie File (${persistentCookieFilePath}). Code ${exitCode}.`
+		} else if (
+			stderr.includes('cookies') &&
+			stderr.includes('No such file or directory')
+		) {
+			specificError = `yt-dlp info failed: Cookie file specified but not found at ${persistentCookieFilePath}. Code ${exitCode}.`
 		}
 
 		throw new Error(`${specificError} Stderr: ${stderr.substring(0, 500)}`)
-	} finally {
-		await cookieHandler
-			?.cleanup()
-			.catch(e =>
-				logger.warn(
-					{ error: e.message },
-					`${logPrefix}: Error during cookie cleanup.`
-				)
-			)
 	}
+	// No finally block needed for cookie cleanup anymore
 }
 
 async function streamAudioWithYtdl(
 	youtubeUrl: string,
 	startTime: number,
-	duration: number,
-	cookie?: string
+	duration: number
 ): Promise<Readable> {
 	const logPrefix = 'ytdl-stream'
-	let cookieHandler: {
-		cookieFilePath?: string
-		cleanup: () => Promise<void>
-	} | null = null
 	let ytdlProcess: ReturnType<typeof exec> | null = null
 
 	logger.info(
-		`${logPrefix}: Streaming audio for ${youtubeUrl}. Cookie provided: ${!!cookie}`
+		`${logPrefix}: Streaming audio for ${youtubeUrl}. Attempting to use cookies from ${persistentCookieFilePath}`
 	)
 
+	const options: any = {
+		noWarnings: true,
+		noCallHome: true,
+		ignoreConfig: true,
+		format: 'bestaudio/best',
+		output: '-',
+		forceIpv4: true,
+		// Pass postprocessor args correctly for youtube-dl-exec
+		'postprocessor-args': `"ffmpeg_i:-ss ${startTime} -to ${startTime + duration}"`
+	}
+
 	try {
-		cookieHandler = await useCookieFile(cookie, logPrefix)
-		const options: any = {
-			noWarnings: true,
-			noCallHome: true,
-			ignoreConfig: true,
-			format: 'bestaudio/best',
-			output: '-',
-			forceIpv4: true,
-			// Pass postprocessor args correctly for youtube-dl-exec
-			'postprocessor-args': `"ffmpeg_i:-ss ${startTime} -to ${startTime + duration}"`
+		// Check if the persistent cookie file exists and is not empty
+		const stats = await fs.stat(persistentCookieFilePath)
+		if (stats.size > 0) {
+			options.cookies = persistentCookieFilePath
+			logger.info(
+				`${logPrefix}: Using persistent cookie file: ${persistentCookieFilePath}`
+			)
+		} else {
+			logger.warn(
+				`${logPrefix}: Persistent cookie file exists but is EMPTY: ${persistentCookieFilePath}. Proceeding without --cookies.`
+			)
 		}
-
-		if (cookieHandler.cookieFilePath) {
-			try {
-				const stats = await fs.stat(cookieHandler.cookieFilePath)
-				if (stats.size > 0) {
-					options.cookies = cookieHandler.cookieFilePath
-					logger.info(
-						`${logPrefix}: Using cookie file: ${cookieHandler.cookieFilePath}`
-					)
-				} else {
-					logger.warn(
-						`${logPrefix}: Cookie file exists but is EMPTY: ${cookieHandler.cookieFilePath}. Proceeding without --cookies.`
-					)
-				}
-			} catch (statErr: any) {
-				logger.error(
-					{ error: statErr, file: cookieHandler.cookieFilePath },
-					`${logPrefix}: Failed to stat cookie file. Proceeding without --cookies.`
-				)
-			}
+	} catch (statErr: any) {
+		if (statErr.code === 'ENOENT') {
+			logger.info(
+				`${logPrefix}: Persistent cookie file not found at ${persistentCookieFilePath}. Proceeding without --cookies.`
+			)
+		} else {
+			logger.error(
+				{ error: statErr, file: persistentCookieFilePath },
+				`${logPrefix}: Failed to stat persistent cookie file. Proceeding without --cookies.`
+			)
 		}
+	}
 
+	try {
 		logger.info(`${logPrefix}: Executing youtube-dl-exec for streaming...`)
 		// Execute and get the child process to access stdout stream
 		ytdlProcess = exec(youtubeUrl, options, {
@@ -253,8 +195,7 @@ async function streamAudioWithYtdl(
 		ytdlProcess.stderr?.on('data', data => {
 			const chunk = data.toString()
 			stderrData += chunk
-			// Avoid overly verbose logging of every stderr chunk unless debugging
-			// logger.debug(`${logPrefix} stderr chunk: ${chunk.trim()}`);
+			// logger.debug(`${logPrefix} stderr chunk: ${chunk.trim()}`); // Uncomment for debugging stderr
 		})
 
 		ytdlProcess.on('error', err => {
@@ -270,15 +211,7 @@ async function streamAudioWithYtdl(
 
 		ytdlProcess.on('close', async code => {
 			const finalStderr = stderrData
-			await cookieHandler
-				?.cleanup()
-				.catch(e =>
-					logger.warn(
-						{ error: e.message },
-						`${logPrefix}: Error during cookie cleanup.`
-					)
-				)
-			cookieHandler = null // Prevent further cleanup attempts
+			// No cookie cleanup needed here anymore
 
 			if (code !== 0) {
 				logger.error(
@@ -297,12 +230,17 @@ async function streamAudioWithYtdl(
 					finalStderr.includes('consent') ||
 					finalStderr.includes('login required')
 				) {
-					specificError = `yt-dlp download failed (Authentication/Authorization Error - 403/401/Login/Bot/Consent?). Check cookie validity/freshness. Code ${code}.`
+					specificError = `yt-dlp download failed (Authentication/Authorization Error - 403/401/Login/Bot/Consent?). Check cookie file (${persistentCookieFilePath}) validity/freshness. Code ${code}.`
 				} else if (
 					finalStderr.includes('Socket error') ||
 					finalStderr.includes('timed out')
 				) {
 					specificError = `yt-dlp download failed (Network/Socket/Timeout error). Check connection. Code ${code}.`
+				} else if (
+					finalStderr.includes('cookies') &&
+					finalStderr.includes('No such file or directory')
+				) {
+					specificError = `yt-dlp download failed: Cookie file specified but not found at ${persistentCookieFilePath}. Code ${code}.`
 				}
 
 				if (!outputAudioStream.destroyed) {
@@ -331,7 +269,7 @@ async function streamAudioWithYtdl(
 				)
 				ytdlProcess.kill('SIGKILL')
 			}
-			await cookieHandler?.cleanup().catch(/* ignore */) // Try cleanup on stream error too
+			// No cookie cleanup needed here
 		})
 
 		outputAudioStream.on('end', () => {
@@ -342,16 +280,9 @@ async function streamAudioWithYtdl(
 	} catch (error: any) {
 		logger.error(
 			{ error: error.message },
-			`${logPrefix}: Error setting up stream (e.g., cookie file, process start).`
+			`${logPrefix}: Error setting up stream (e.g., process start).`
 		)
-		await cookieHandler
-			?.cleanup()
-			.catch(e =>
-				logger.warn(
-					{ error: e.message },
-					`${logPrefix}: Error during cookie cleanup in catch block.`
-				)
-			)
+		// No cookie cleanup needed here
 
 		// Return a stream that immediately errors
 		const errorStream = new Readable({
@@ -414,15 +345,30 @@ export async function runTranscriptionJob(
 
 	jobLogger.info('Starting transcription job...')
 
-	const youtubeCookie = process.env.YOUTUBE_COOKIE
-	if (youtubeCookie && youtubeCookie.trim().length > 0) {
-		jobLogger.info(
-			`Found YOUTUBE_COOKIE env var (length: ${youtubeCookie.length}).`
-		)
-	} else {
-		jobLogger.warn(
-			'YOUTUBE_COOKIE env var not set or empty. Transcription may fail for private/restricted videos.'
-		)
+	// Check if the persistent cookie file exists (optional logging)
+	try {
+		await fs.access(persistentCookieFilePath, fs.constants.R_OK) // Check read access
+		const stats = await fs.stat(persistentCookieFilePath)
+		if (stats.size > 0) {
+			jobLogger.info(
+				`Persistent cookie file found and readable at ${persistentCookieFilePath}. It will be used if needed.`
+			)
+		} else {
+			jobLogger.warn(
+				`Persistent cookie file found at ${persistentCookieFilePath} but is empty. It will not be used.`
+			)
+		}
+	} catch (err: any) {
+		if (err.code === 'ENOENT') {
+			jobLogger.warn(
+				`Persistent cookie file not found at ${persistentCookieFilePath}. Transcription may fail for private/restricted videos.`
+			)
+		} else {
+			jobLogger.error(
+				{ error: err.message, file: persistentCookieFilePath },
+				`Error accessing persistent cookie file. Transcription may fail for private/restricted videos.`
+			)
+		}
 	}
 
 	try {
@@ -435,7 +381,8 @@ export async function runTranscriptionJob(
 		jobLogger.info(`Fetching video info via youtube-dl-exec...`)
 
 		try {
-			videoInfo = await getVideoInfoWithYtdl(url, youtubeCookie)
+			// Pass url only, cookie file path is handled internally now
+			videoInfo = await getVideoInfoWithYtdl(url)
 			jobLogger.info(
 				`Successfully fetched video info for title: ${videoInfo.title}`
 			)
@@ -444,17 +391,20 @@ export async function runTranscriptionJob(
 				{ error: err.message, stack: err.stack },
 				'Failed to get video info from youtube-dl-exec.'
 			)
-			let errorMessage = `Xatolik: Video ma'lumotlarini olib bo'lmadi (yt-dlp). URL, server yoki cookie'ni tekshiring. (${err.message || 'Unknown yt-dlp info error'})`
+			// Keep user-friendly error messages, reference cookie file path
+			let errorMessage = `Xatolik: Video ma'lumotlarini olib bo'lmadi (yt-dlp). URL, server yoki cookie faylini (${persistentCookieFilePath}) tekshiring. (${err.message || 'Unknown yt-dlp info error'})`
 			if (err.message?.includes('YouTube access error')) {
 				if (err.message?.includes('bot confirmation')) {
-					errorMessage = `Video ma'lumotlarini olib bo'lmadi (yt-dlp). YouTube bot tekshiruvini talab qilmoqda. Cookie faylini yangilang/tekshiring. (${err.message})`
+					errorMessage = `Video ma'lumotlarini olib bo'lmadi (yt-dlp). YouTube bot tekshiruvini talab qilmoqda. Cookie faylini (${persistentCookieFilePath}) yangilang/tekshiring. (${err.message})`
 				} else {
-					errorMessage = `Video ma'lumotlarini olib bo'lmadi (yt-dlp). YouTube kirish xatosi (maxfiy/mavjud emas/yosh tekshiruvi/cookie yaroqsiz?). (${err.message})`
+					errorMessage = `Video ma'lumotlarini olib bo'lmadi (yt-dlp). YouTube kirish xatosi (maxfiy/mavjud emas/yosh tekshiruvi/cookie yaroqsiz?). Cookie faylini (${persistentCookieFilePath}) tekshiring. (${err.message})`
 				}
-			} else if (err.message?.includes('write cookie file')) {
-				errorMessage = `Server xatosi: Cookie faylini yozib bo'lmadi. (${err.message})`
+			} else if (
+				err.message?.includes('cookie file specified but not found')
+			) {
+				errorMessage = `Server xatosi: Cookie fayli topilmadi (${persistentCookieFilePath}). (${err.message})`
 			} else if (err.message?.includes('Unable to download video data')) {
-				errorMessage = `Video ma'lumotlarini olib bo'lmadi (yt-dlp): Video data yuklanmadi. URL/Tarmoq/Cookie'ni tekshiring. (${err.message})`
+				errorMessage = `Video ma'lumotlarini olib bo'lmadi (yt-dlp): Video data yuklanmadi. URL/Tarmoq/Cookie faylini (${persistentCookieFilePath}) tekshiring. (${err.message})`
 			}
 
 			await pushTranscriptionEvent(jobId, errorMessage, true, broadcast)
@@ -589,11 +539,11 @@ export async function runTranscriptionJob(
 					segmentLogger.info(
 						`Attempting segment download via youtube-dl-exec...`
 					)
+					// Pass url, start time, duration only. Cookie handled internally.
 					audioStream = await streamAudioWithYtdl(
 						url,
 						segmentStartTime,
-						safeActualDuration,
-						youtubeCookie
+						safeActualDuration
 					)
 
 					segmentLogger.info(`Starting FFmpeg encoding...`)
@@ -605,7 +555,6 @@ export async function runTranscriptionJob(
 							segmentLogger.info(`FFmpeg started: ${cmd}`)
 						)
 						.on('error', (err, stdout, stderr) => {
-							// Log ffmpeg specific errors, but main error handled in promise reject
 							segmentLogger.error(
 								{ message: err.message, stdout, stderr },
 								`FFmpeg error event processing segment`
@@ -654,7 +603,6 @@ export async function runTranscriptionJob(
 								{ error: inputError.message },
 								'Error on youtube-dl-exec input stream for ffmpeg'
 							)
-							// The specific yt-dlp errors (auth, network) are now surfaced here
 							killFFmpegAndReject(
 								new Error(
 									`Input stream error: ${inputError.message}`
@@ -777,7 +725,6 @@ export async function runTranscriptionJob(
 							`ElevenLabs transcription failed for ${gcsUri}`
 						)
 						if (!transcriptGoogle) {
-							// If Google also failed, this is critical
 							throw new Error(
 								`ElevenLabs failed and Google text is also empty: ${elevenLabsError.message}`
 							)
@@ -793,7 +740,7 @@ export async function runTranscriptionJob(
 
 					const googleInput = transcriptGoogle || ''
 					const elevenLabsInput =
-						transcriptElevenLabs || (transcriptGoogle ? '' : null) // Provide empty string if Google has text, otherwise null
+						transcriptElevenLabs || (transcriptGoogle ? '' : null)
 
 					if (googleInput === '' && elevenLabsInput === null) {
 						segmentLogger.error(
@@ -850,7 +797,7 @@ export async function runTranscriptionJob(
 					)
 
 					// --- Check for Fatal Errors to abort the job ---
-					// Capture yt-dlp errors surfaced via the input stream error
+					// Updated error messages to refer to the cookie file
 					if (
 						segmentErr.message?.includes('Input stream error:') &&
 						(segmentErr.message?.includes(
@@ -861,25 +808,35 @@ export async function runTranscriptionJob(
 							) ||
 							segmentErr.message?.includes(
 								'yt-dlp stream process exited'
-							)) // Catch generic exit code errors too
+							) ||
+							segmentErr.message?.includes(
+								'Cookie file specified but not found' // Specific cookie file error
+							))
 					) {
 						segmentLogger.error(
 							'Fatal youtube-dl-exec stream related error occurred. Aborting job.'
 						)
-						let userMsg = `YouTube yuklashda/kirishda xatolik (yt-dlp ${segmentNumber}/${numSegments}). Cookie/URL/Video holatini tekshiring. Jarayon to'xtatildi. (${segmentErr.message})`
+						let userMsg = `YouTube yuklashda/kirishda xatolik (yt-dlp ${segmentNumber}/${numSegments}). Cookie faylini (${persistentCookieFilePath})/URL/Video holatini tekshiring. Jarayon to'xtatildi. (${segmentErr.message})`
 						if (
 							segmentErr.message?.includes(
 								'Authentication/Authorization Error'
 							)
 						) {
-							userMsg = `YouTube kirish xatosi (${segmentNumber}/${numSegments}): Cookie yaroqsiz/eskirgan yoki video maxfiy/yosh/bot tekshiruvi? (${segmentErr.message})`
+							userMsg = `YouTube kirish xatosi (${segmentNumber}/${numSegments}): Cookie fayli (${persistentCookieFilePath}) yaroqsiz/eskirgan yoki video maxfiy/yosh/bot tekshiruvi? (${segmentErr.message})`
 						} else if (
 							segmentErr.message?.includes(
 								'Network/Socket/Timeout error'
 							)
 						) {
 							userMsg = `Tarmoq xatosi (${segmentNumber}/${numSegments}): YouTube'ga ulanib bo'lmadi (yt-dlp timeout/socket error). (${segmentErr.message})`
+						} else if (
+							segmentErr.message?.includes(
+								'Cookie file specified but not found'
+							)
+						) {
+							userMsg = `Server xatosi (${segmentNumber}/${numSegments}): Cookie fayli topilmadi (${persistentCookieFilePath}). Jarayon to'xtatildi. (${segmentErr.message})`
 						}
+
 						await pushTranscriptionEvent(
 							jobId,
 							userMsg,
@@ -887,7 +844,7 @@ export async function runTranscriptionJob(
 							broadcast
 						)
 						throw new Error( // Re-throw to exit the main try block
-							`Aborting job due to fatal stream/auth/network failure on segment ${segmentNumber}: ${segmentErr.message}`
+							`Aborting job due to fatal stream/auth/network/cookie failure on segment ${segmentNumber}: ${segmentErr.message}`
 						)
 					} else if (
 						segmentErr.message?.includes('FFmpeg command failed') ||
@@ -942,27 +899,12 @@ export async function runTranscriptionJob(
 						throw new Error(
 							`Aborting job due to fatal transcription/editing failure on segment ${segmentNumber}: ${segmentErr.message}`
 						)
-					} else if (segmentErr.message?.includes('cookie file')) {
-						// This is less likely here, more likely in the initial call, but handle defensively
-						segmentLogger.error(
-							'Fatal cookie file error during segment processing. Aborting job.'
-						)
-						await pushTranscriptionEvent(
-							jobId,
-							`Server xatosi: Cookie fayl bilan ishlashda muammo (${segmentNumber}/${numSegments}). Jarayon to'xtatildi. (${segmentErr.message})`,
-							true,
-							broadcast
-						)
-						throw new Error(
-							`Aborting job due to cookie file failure on segment ${segmentNumber}: ${segmentErr.message}`
-						)
 					}
 					// Non-fatal errors will allow retry loop to continue
 
 					await delay(2000 + attempt * 1000) // Backoff before retry
 				} finally {
 					// Ensure resources are cleaned up after each attempt if needed
-					// Kill ffmpeg if it's still running and the segment failed
 					if (ffmpegCommand && !segmentProcessedSuccessfully) {
 						try {
 							segmentLogger.warn(
@@ -976,7 +918,6 @@ export async function runTranscriptionJob(
 							)
 						}
 					}
-					// Destroy input stream if it exists and segment failed, to prevent leaks
 					if (
 						audioStream &&
 						!segmentProcessedSuccessfully &&
@@ -1000,7 +941,6 @@ export async function runTranscriptionJob(
 							)
 						} catch (deleteErr: any) {
 							segmentLogger.warn(
-								// Warn instead of error, as job can continue
 								{
 									error: deleteErr.message,
 									file: destFileName
@@ -1079,13 +1019,11 @@ export async function runTranscriptionJob(
 		await pushTranscriptionEvent(jobId, finalTranscript, true, broadcast)
 		jobStatusUpdated = true // Mark success
 	} catch (err: any) {
-		// --- Final Error Handling ---
 		jobLogger.error(
 			{ error: err.message, stack: err.stack },
 			'Critical error caught in runTranscriptionJob main try-catch block'
 		)
 
-		// Ensure job status is marked as error if it wasn't already completed/errored
 		if (!jobStatusUpdated) {
 			try {
 				await transcriptService.error(jobId)
@@ -1098,31 +1036,35 @@ export async function runTranscriptionJob(
 			}
 		}
 
-		// Attempt to send a final error message to the client
 		if (broadcast) {
 			try {
 				let clientErrorMessage = `Serverda kutilmagan xatolik yuz berdi. (${err.message?.substring(0, 100) || 'No details'}...)`
 
-				// Reuse specific error messages generated during fatal error checks
 				if (
 					err.message?.includes(
-						'Aborting job due to fatal stream/auth/network failure'
+						'Aborting job due to fatal stream/auth/network/cookie failure'
 					)
 				) {
 					if (err.message?.includes('bot confirmation')) {
-						clientErrorMessage = `Xatolik: YouTube bot tekshiruvini talab qilmoqda. Cookie faylini yangilang/tekshiring. Jarayon to'xtatildi. (${err.message?.substring(0, 100)}...)`
+						clientErrorMessage = `Xatolik: YouTube bot tekshiruvini talab qilmoqda. Cookie faylini (${persistentCookieFilePath}) yangilang/tekshiring. Jarayon to'xtatildi. (${err.message?.substring(0, 100)}...)`
 					} else if (
 						err.message?.includes(
 							'Authentication/Authorization Error'
 						)
 					) {
-						clientErrorMessage = `Xatolik: YouTube kirish xatosi (cookie yaroqsiz/video maxfiy?). Jarayon to'xtatildi. (${err.message?.substring(0, 100)}...)`
+						clientErrorMessage = `Xatolik: YouTube kirish xatosi (cookie fayli (${persistentCookieFilePath}) yaroqsiz/video maxfiy?). Jarayon to'xtatildi. (${err.message?.substring(0, 100)}...)`
 					} else if (
 						err.message?.includes('Network/Socket/Timeout error')
 					) {
 						clientErrorMessage = `Xatolik: Tarmoq xatosi (YouTube'ga ulanib bo'lmadi?). Jarayon to'xtatildi. (${err.message?.substring(0, 100)}...)`
+					} else if (
+						err.message?.includes(
+							'Cookie file specified but not found'
+						)
+					) {
+						clientErrorMessage = `Xatolik: Serverda cookie fayli topilmadi (${persistentCookieFilePath}). Jarayon to'xtatildi. (${err.message?.substring(0, 100)}...)`
 					} else {
-						clientErrorMessage = `Xatolik: YouTube'dan yuklab bo'lmadi yoki kirishda/tarmoqda muammo. Jarayon to'xtatildi. (${err.message?.substring(0, 100)}...)`
+						clientErrorMessage = `Xatolik: YouTube'dan yuklab bo'lmadi yoki kirishda/tarmoqda muammo (cookie fayli: ${persistentCookieFilePath}). Jarayon to'xtatildi. (${err.message?.substring(0, 100)}...)`
 					}
 				} else if (
 					err.message?.includes(
@@ -1149,17 +1091,21 @@ export async function runTranscriptionJob(
 					err.message?.includes("Video ma'lumotlarini olib bo'lmadi") // Catch initial info fetch errors
 				) {
 					if (err.message?.includes('bot confirmation')) {
-						clientErrorMessage = `Xatolik: Video ma'lumotlarini olib bo'lmadi (yt-dlp). YouTube bot tekshiruvini talab qilmoqda. Cookie faylini yangilang/tekshiring. (${err.message?.substring(0, 100)}...)`
+						clientErrorMessage = `Xatolik: Video ma'lumotlarini olib bo'lmadi (yt-dlp). YouTube bot tekshiruvini talab qilmoqda. Cookie faylini (${persistentCookieFilePath}) yangilang/tekshiring. (${err.message?.substring(0, 100)}...)`
+					} else if (
+						err.message?.includes(
+							'cookie file specified but not found'
+						)
+					) {
+						clientErrorMessage = `Xatolik: Video ma'lumotlarini olib bo'lmadi. Serverda cookie fayli topilmadi (${persistentCookieFilePath}). (${err.message?.substring(0, 100)}...)`
 					} else {
-						clientErrorMessage = `Xatolik: Video ma'lumotlarini olib bo'lmadi (yt-dlp). URL/Cookie/Video holatini/Tarmoqni tekshiring. (${err.message?.substring(0, 100)}...)`
+						clientErrorMessage = `Xatolik: Video ma'lumotlarini olib bo'lmadi (yt-dlp). URL/Cookie faylini (${persistentCookieFilePath})/Video holatini/Tarmoqni tekshiring. (${err.message?.substring(0, 100)}...)`
 					}
 				} else if (
 					err.message?.includes('GOOGLE_CLOUD_BUCKET_NAME') ||
 					err.message?.includes('Bucket topilmadi')
 				) {
 					clientErrorMessage = `Server konfiguratsiya xatosi: Bucket topilmadi.`
-				} else if (err.message?.includes('cookie file')) {
-					clientErrorMessage = `Server xatosi: Cookie fayl bilan ishlashda muammo. (${err.message?.substring(0, 100)}...)`
 				}
 
 				await pushTranscriptionEvent(
@@ -1180,6 +1126,5 @@ export async function runTranscriptionJob(
 		jobLogger.info(
 			`Transcription job function finished execution after ${formatDuration(finalDuration)}.`
 		)
-		// Note: Cookie file cleanup is handled within the helper functions' finally blocks
 	}
 }
