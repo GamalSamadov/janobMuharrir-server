@@ -1,4 +1,5 @@
 import { ChildProcess, spawn } from 'child_process'
+// Import ChildProcess type
 import ffmpeg from 'fluent-ffmpeg'
 import os from 'os'
 import path from 'path'
