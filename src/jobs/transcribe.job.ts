@@ -3,7 +3,9 @@ import ffmpeg from 'fluent-ffmpeg'
 import path from 'path'
 import { performance } from 'perf_hooks'
 import { PassThrough, Readable, Writable } from 'stream'
-import { CookieJar } from 'tough-cookie'
+import * as toughCookie from 'tough-cookie'
+
+// Import the whole module
 
 import {
 	convertToUzbekLatin,
@@ -34,7 +36,7 @@ interface VideoInfo {
 	duration: number // Duration in seconds
 }
 
-// --- MODIFIED Helper to get request options with cookies ---
+// --- REVISED Helper to get request options with cookies ---
 async function getRequestOptionsWithCookies(
 	logPrefix: string
 ): Promise<ytdl.downloadOptions['requestOptions']> {
@@ -45,38 +47,153 @@ async function getRequestOptionsWithCookies(
 			'utf-8'
 		)
 		if (cookieFileContent.trim().length > 0) {
-			const jar = new CookieJar()
+			// Use tough-cookie's CookieJar for proper parsing and handling
+			const jar = new toughCookie.CookieJar()
 			const lines = cookieFileContent.split('\n')
-			let loadedCookies = 0
-			const youtubeUrl = 'https://www.youtube.com/' // URL for getting cookies
+			let attemptedLoads = 0
+			let successfullySetCookies = 0
+			const youtubeUrl = 'https://www.youtube.com/' // URL for context and getting cookies
+			const now = Date.now()
 
 			for (const line of lines) {
 				const trimmedLine = line.trim()
+				// Skip comments and empty lines
 				if (!trimmedLine || trimmedLine.startsWith('#')) {
 					continue
 				}
-				try {
-					jar.setCookieSync(trimmedLine, youtubeUrl, {
-						ignoreError: true
-					})
-					loadedCookies++
-				} catch (cookieParseError: any) {
+				attemptedLoads++
+
+				// --- Parse Netscape cookie format line ---
+				// Format: domain<TAB>includeSubdomains<TAB>path<TAB>secure<TAB>expires<TAB>name<TAB>value
+				const parts = trimmedLine.split('\t')
+				if (parts.length !== 7) {
 					logger.warn(
-						{ error: cookieParseError.message, line: trimmedLine },
-						`${logPrefix}: Failed to parse cookie line, skipping.`
+						{ line: trimmedLine.substring(0, 100) }, // Log truncated line
+						`${logPrefix}: Skipping cookie line due to incorrect number of tab-separated parts (${parts.length}). Expected 7.`
+					)
+					continue
+				}
+
+				const [domain, , path, secureStr, expiresStr, name, value] =
+					parts
+
+				// Basic validation
+				if (!domain || !path || !name) {
+					logger.warn(
+						{ line: trimmedLine.substring(0, 100) },
+						`${logPrefix}: Skipping cookie line due to missing essential parts (domain, path, name).`
+					)
+					continue
+				}
+
+				try {
+					const expiresTimestamp = parseInt(expiresStr, 10)
+					let expiresDate: Date | undefined | 'Infinity' = undefined // tough-cookie uses 'Infinity' or Date
+
+					if (!isNaN(expiresTimestamp) && expiresTimestamp > 0) {
+						// Check if expired
+						if (expiresTimestamp * 1000 <= now) {
+							// logger.debug(`${logPrefix}: Skipping expired cookie: ${name} for ${domain}`);
+							continue // Skip expired cookie
+						}
+						expiresDate = new Date(expiresTimestamp * 1000)
+					} else if (expiresStr === '0') {
+						expiresDate = undefined // Session cookie
+					} else {
+						// Attempt to handle potential non-standard large numbers or treat as session
+						// If it's a very large number, treat it as non-expiring ('Infinity')
+						// Otherwise, log a warning and treat as session? For now, treat non-zero, non-timestamp as session.
+						if (
+							!isNaN(expiresTimestamp) &&
+							expiresTimestamp !== 0
+						) {
+							// Potentially a very large number representing no expiry
+							// tough-cookie might handle this better internally, but let's be safe
+							// We'll let setCookie handle it, maybe logging if it fails below.
+							expiresDate = new Date(expiresTimestamp * 1000) // Try creating date anyway
+							if (isNaN(expiresDate.getTime())) {
+								logger.warn(
+									{
+										line: trimmedLine.substring(0, 100),
+										expires: expiresStr
+									},
+									`${logPrefix}: Could not parse expiry timestamp ${expiresStr} into valid Date, treating as session cookie.`
+								)
+								expiresDate = undefined
+							}
+						} else {
+							logger.warn(
+								{
+									line: trimmedLine.substring(0, 100),
+									expires: expiresStr
+								},
+								`${logPrefix}: Non-numeric, non-zero expiry value '${expiresStr}', treating as session cookie.`
+							)
+							expiresDate = undefined // Treat as session cookie
+						}
+					}
+
+					const isSecure = secureStr.toUpperCase() === 'TRUE'
+					// HttpOnly is not standard in Netscape format - assume false
+					const isHttpOnly = false // YouTube often uses HttpOnly, but we can't know from standard export
+
+					// Create the Cookie object using tough-cookie's factory/constructor
+					// Need to handle domain format (leading dot means include subdomains)
+					const cookieDomain = domain.startsWith('.')
+						? domain.substring(1)
+						: domain
+					const hostOnly = !domain.startsWith('.')
+
+					const cookie = toughCookie.Cookie.fromJSON({
+						key: name,
+						value: value,
+						domain: cookieDomain,
+						path: path,
+						expires: expiresDate, // Use ISO string format if date exists
+						secure: isSecure,
+						httpOnly: isHttpOnly,
+						hostOnly: hostOnly,
+						creation: new Date().toISOString() // Optional: add creation time
+					})
+
+					if (!cookie) {
+						logger.warn(
+							{ line: trimmedLine.substring(0, 100) },
+							`${logPrefix}: Failed to create tough-cookie object from parsed line.`
+						)
+						continue
+					}
+
+					// Use setCookie (async) with the parsed object
+					// Provide the URL the cookie should be associated with (helps with domain/path matching)
+					// Use the domain from the cookie itself as the context URL for setting
+					// Construct a plausible URL for context
+					const sourceUrl = `${isSecure ? 'https://' : 'http://'}${domain.replace(/^\./, '')}${path}`
+					await jar.setCookie(cookie, sourceUrl)
+					successfullySetCookies++
+					// logger.debug(`${logPrefix}: Successfully parsed and set cookie: ${name}`);
+				} catch (cookieParseSetError: any) {
+					logger.warn(
+						{
+							error: cookieParseSetError.message,
+							line: trimmedLine.substring(0, 100)
+						},
+						`${logPrefix}: Error processing/setting cookie from line, skipping.`
 					)
 				}
-			}
+			} // End loop through lines
 
-			if (loadedCookies > 0) {
+			if (successfullySetCookies > 0) {
 				logger.info(
-					`${logPrefix}: Successfully loaded ${loadedCookies} cookies from file.`
+					`${logPrefix}: Successfully parsed and stored ${successfullySetCookies} potential cookies (out of ${attemptedLoads} lines attempted).`
 				)
-				// Use async getCookieString as it's the standard way
+
+				// Now, get the cookie string specifically for the target YouTube URL
 				const cookieString = await jar.getCookieString(youtubeUrl)
+
 				if (cookieString) {
 					logger.info(
-						`${logPrefix}: Adding 'Cookie' header to request options.`
+						`${logPrefix}: Adding 'Cookie' header with ${cookieString.split(';').length} cookies for ${youtubeUrl}.`
 					)
 					requestOptions = {
 						headers: {
@@ -86,22 +203,26 @@ async function getRequestOptionsWithCookies(
 						}
 					}
 				} else {
+					// This warning now means cookies were parsed OK, but none matched the youtubeUrl requested
 					logger.warn(
-						`${logPrefix}: Loaded cookies but failed to get cookie string for ${youtubeUrl}.`
+						`${logPrefix}: Parsed ${successfullySetCookies} cookies, but none were applicable for the URL '${youtubeUrl}' (check domain/path matching and expiration in the source file).`
 					)
+					// Optional: Log jar contents for debugging
+					// logger.debug(`${logPrefix}: Cookie Jar state: ${JSON.stringify(jar.toJSON())}`);
 				}
-			} else if (lines.some(l => l.trim() && !l.trim().startsWith('#'))) {
+			} else if (attemptedLoads > 0) {
 				logger.warn(
-					`${logPrefix}: Cookie file was not empty, but failed to load any valid cookies.`
+					`${logPrefix}: Cookie file was not empty (${attemptedLoads} lines attempted), but failed to parse or store any valid, non-expired cookies.`
 				)
 			} else {
 				logger.info(
-					`${logPrefix}: Cookie file was empty. Proceeding without cookies.`
+					`${logPrefix}: Cookie file contained no valid cookie lines to process.`
 				)
 			}
 		} else {
-			logger.warn(
-				`${logPrefix}: Persistent cookie file exists but is EMPTY: ${persistentCookieFilePath}. Proceeding without cookies.`
+			logger.info(
+				// Info level, as an empty file is not an error itself
+				`${logPrefix}: Persistent cookie file exists but is empty: ${persistentCookieFilePath}. Proceeding without cookies.`
 			)
 		}
 	} catch (statErr: any) {
@@ -118,7 +239,7 @@ async function getRequestOptionsWithCookies(
 	}
 	return requestOptions
 }
-// --- End Helper ---
+// --- End REVISED Helper ---
 
 async function getVideoInfoWithYtdlCore(
 	youtubeUrl: string
@@ -126,18 +247,20 @@ async function getVideoInfoWithYtdlCore(
 	const logPrefix = 'ytdl-core-info'
 	logger.info(`${logPrefix}: Fetching info for ${youtubeUrl}.`)
 
+	// Use the revised helper to get options
 	const cookieRequestOptions = await getRequestOptionsWithCookies(logPrefix)
 	const options: ytdl.getInfoOptions = {
 		requestOptions: cookieRequestOptions
 	}
 
-	if (options.requestOptions) {
+	if (options.requestOptions?.headers) {
+		// Check if Cookie header was actually set
 		logger.info(
 			`${logPrefix}: Using request options with cookies for getInfo.`
 		)
 	} else {
 		logger.info(
-			`${logPrefix}: No cookie options generated, using default request options for getInfo.`
+			`${logPrefix}: No valid/applicable cookies found or loaded, using default request options for getInfo.`
 		)
 	}
 
@@ -153,7 +276,7 @@ async function getVideoInfoWithYtdlCore(
 		if (!info.formats || info.formats.length === 0) {
 			logger.error(
 				{ videoDetails: info.videoDetails, formats: info.formats },
-				`${logPrefix}: Video info fetched but no formats found. Possible region lock, premiere, or parsing issue?`
+				`${logPrefix}: Video info fetched but no formats found. Possible region lock, premiere, member-only, or parsing issue?`
 			)
 			// Use a specific error message
 			throw new Error(
@@ -178,7 +301,7 @@ async function getVideoInfoWithYtdlCore(
 		return { title, duration }
 	} catch (error: any) {
 		const errorMessage = error?.message || 'Unknown ytdl-core info error'
-		const statusCode = error?.statusCode // Capture status code if available (often is for HTTP errors)
+		const statusCode = error?.statusCode // Capture status code if available
 		logger.error(
 			{
 				error: errorMessage,
@@ -195,19 +318,20 @@ async function getVideoInfoWithYtdlCore(
 			// ** This is the specific check for the user's error **
 			specificError = `YouTube page parsing failed (ytdl-core 'Could not extract functions'): YouTube might have updated its site structure. Please update the 'ytdl-core' library dependency. Also check if the video URL is correct and accessible. (Msg: ${errorMessage})`
 		} else if (errorMessage.includes('No downloadable formats found')) {
-			specificError = `YouTube info parsing failed (ytdl-core 'No downloadable formats found'): The video might be region-locked, private, an unstarted live stream/premiere, or require stronger authentication (check cookies). (Msg: ${errorMessage})`
+			specificError = `YouTube info parsing failed (ytdl-core 'No downloadable formats found'): The video might be region-locked, private, member-only, an unstarted live stream/premiere, or require stronger authentication (check cookies). (Msg: ${errorMessage})`
 		} else if (
 			errorMessage.includes('private video') ||
 			errorMessage.includes('Login required') ||
+			errorMessage.includes('members-only') ||
 			errorMessage.includes('confirm your age') ||
 			errorMessage.includes('unavailable') || // Covers general unavailability
-			statusCode === 403 || // Forbidden (often cookies/login/region)
+			statusCode === 403 || // Forbidden (often cookies/login/region/member)
 			statusCode === 401 || // Unauthorized
 			statusCode === 410 || // Gone (often premieres before start or deleted videos)
 			errorMessage.includes('age-restricted') ||
 			errorMessage.includes('Terms of Service')
 		) {
-			specificError = `YouTube access error (ytdl-core info): Video might be private/unavailable/premiere, require login/age confirmation/TOS agreement, or cookie file (${persistentCookieFilePath}) is invalid/expired/rejected. (Status: ${statusCode || 'N/A'}, Msg: ${errorMessage})`
+			specificError = `YouTube access error (ytdl-core info): Video might be private/unavailable/premiere/member-only, require login/age confirmation/TOS agreement, or cookie file (${persistentCookieFilePath}) is invalid/expired/rejected/insufficient. (Status: ${statusCode || 'N/A'}, Msg: ${errorMessage})`
 		} else if (
 			errorMessage.includes('No video id found') ||
 			errorMessage.includes('Not a YouTube domain')
@@ -238,6 +362,7 @@ async function streamAudioWithYtdlCore(youtubeUrl: string): Promise<Readable> {
 	const logPrefix = 'ytdl-core-stream'
 	logger.info(`${logPrefix}: Initiating audio stream for ${youtubeUrl}.`)
 
+	// Use the revised helper to get options
 	const cookieRequestOptions = await getRequestOptionsWithCookies(logPrefix)
 	const options: ytdl.downloadOptions = {
 		filter: 'audioonly',
@@ -245,13 +370,14 @@ async function streamAudioWithYtdlCore(youtubeUrl: string): Promise<Readable> {
 		requestOptions: cookieRequestOptions
 	}
 
-	if (options.requestOptions) {
+	if (options.requestOptions?.headers) {
+		// Check if Cookie header was actually set
 		logger.info(
 			`${logPrefix}: Using request options with cookies for download.`
 		)
 	} else {
 		logger.info(
-			`${logPrefix}: No cookie options generated, using default request options for download.`
+			`${logPrefix}: No valid/applicable cookies found or loaded, using default request options for download.`
 		)
 	}
 
@@ -263,7 +389,7 @@ async function streamAudioWithYtdlCore(youtubeUrl: string): Promise<Readable> {
 		// Provide more context for common stream errors
 		let specificMsg = `ytdl stream error: ${err.message}`
 		if (statusCode === 403 || statusCode === 401 || statusCode === 410) {
-			specificMsg = `ytdl stream error: YouTube access denied during download (Status ${statusCode}). Check cookies (${persistentCookieFilePath}) or video status/restrictions. Msg: ${err.message}`
+			specificMsg = `ytdl stream error: YouTube access denied during download (Status ${statusCode}). Check cookies (${persistentCookieFilePath}) or video status/restrictions (private/member/region?). Msg: ${err.message}`
 		} else if (
 			err.code === 'ECONNRESET' ||
 			err.code === 'ETIMEDOUT' ||
@@ -273,6 +399,9 @@ async function streamAudioWithYtdlCore(youtubeUrl: string): Promise<Readable> {
 		} else if (err.message?.includes('formats')) {
 			// This might indicate an issue found during stream setup if getInfo passed somehow
 			specificMsg = `ytdl stream setup error: Problem finding suitable audio format. Check video status/restrictions. Msg: ${err.message}`
+		} else if (err.message?.includes('Could not extract functions')) {
+			// This error can sometimes happen at the download stage too
+			specificMsg = `ytdl stream setup error: YouTube page parsing failed (ytdl-core 'Could not extract functions') during download setup. Update 'ytdl-core'? Msg: ${err.message}`
 		}
 
 		logger.error(
@@ -284,6 +413,7 @@ async function streamAudioWithYtdlCore(youtubeUrl: string): Promise<Readable> {
 
 	stream.on('progress', (chunkLength, downloaded, total) => {
 		/* Optional logging */
+		// logger.debug(`${logPrefix}: Progress - Chunk: ${chunkLength}, Downloaded: ${downloaded}, Total: ${total}`);
 	})
 	stream.on('end', () => {
 		logger.info(`${logPrefix}: ytdl stream ended normally.`)
@@ -301,7 +431,7 @@ async function streamAudioWithYtdlCore(youtubeUrl: string): Promise<Readable> {
 				// Changed to error as this usually precedes a stream 'error' event
 				`${logPrefix}: ytdl download received non-success status code: ${response.statusCode}. Stream likely to fail.`
 			)
-			// It might be useful to destroy the stream proactively here, though ytdl-core usually emits 'error'
+			// Consider destroying the stream proactively, although ytdl-core usually emits 'error'
 			// if (!stream.destroyed) stream.destroy(new Error(`Download failed with status code ${response.statusCode}`));
 		}
 	})
@@ -362,17 +492,17 @@ export async function runTranscriptionJob(
 		await fs.access(persistentCookieFilePath, fs.constants.R_OK)
 		const stats = await fs.stat(persistentCookieFilePath)
 		jobLogger.info(
-			`Persistent cookie file found at ${persistentCookieFilePath} (${stats.size > 0 ? 'not empty' : 'empty'}). ${stats.size > 0 ? 'Cookies will be loaded if valid.' : 'No cookies will be loaded.'}`
+			`Persistent cookie file found at ${persistentCookieFilePath} (${stats.size > 0 ? 'not empty' : 'empty'}). ${stats.size > 0 ? 'Cookies will be attempted to load if valid.' : 'No cookies will be loaded.'}`
 		)
 	} catch (err: any) {
 		if (err.code === 'ENOENT') {
 			jobLogger.warn(
-				`Persistent cookie file not found at ${persistentCookieFilePath}. Transcription may fail for private/restricted videos.`
+				`Persistent cookie file not found at ${persistentCookieFilePath}. Transcription may fail for private/restricted/member videos.`
 			)
 		} else {
 			jobLogger.error(
 				{ error: err.message, file: persistentCookieFilePath },
-				`Error accessing persistent cookie file. Transcription may fail for private/restricted videos.`
+				`Error accessing persistent cookie file. Transcription may fail for private/restricted/member videos.`
 			)
 		}
 	}
@@ -401,12 +531,14 @@ export async function runTranscriptionJob(
 			// --- Translate specific errors for the user ---
 			let userErrorMessage = `Xatolik: Video ma'lumotlarini olib bo'lmadi. Sabab: ${err.message}` // Default uses the detailed error
 
+			// Use the more specific error messages generated by getVideoInfoWithYtdlCore
 			if (err.message?.includes('Could not extract functions')) {
 				userErrorMessage = `Xatolik: YouTube sahifasini o'qishda muammo ('Could not extract functions'). YouTube sayt tuzilishini o'zgartirgan bo'lishi mumkin. **Iltimos, serverdagi 'ytdl-core' kutubxonasini yangilang.** Video URL to'g'riligini va unga kirish mumkinligini tekshiring.`
 			} else if (err.message?.includes('No downloadable formats found')) {
-				userErrorMessage = `Xatolik: Video uchun yuklab olinadigan formatlar topilmadi. Video hudud bo'yicha cheklangan, maxfiy, hali boshlanmagan jonli efir/premyera bo'lishi yoki cookie fayllar yetarli bo'lmasligi mumkin (${persistentCookieFilePath}).`
+				userErrorMessage = `Xatolik: Video uchun yuklab olinadigan formatlar topilmadi. Video hudud bo'yicha cheklangan, maxfiy, a'zolar uchun, hali boshlanmagan jonli efir/premyera bo'lishi yoki cookie fayllar yetarli bo'lmasligi mumkin (${persistentCookieFilePath}).`
 			} else if (err.message?.includes('YouTube access error')) {
-				userErrorMessage = `Xatolik: YouTube video ma'lumotiga kirishda muammo (maxfiy/mavjud emas/yosh cheklovi/login/cookie?). Cookie faylini tekshiring (${persistentCookieFilePath}). (${err.message})`
+				// Includes private, login, age, member, unavailable, 403, 401 etc.
+				userErrorMessage = `Xatolik: YouTube video ma'lumotiga kirishda muammo (maxfiy/a'zolar uchun/mavjud emas/yosh cheklovi/login/cookie?). Cookie faylini tekshiring (${persistentCookieFilePath}). (${err.message})`
 			} else if (err.message?.includes('Invalid YouTube URL?')) {
 				userErrorMessage = `Xatolik: Noto'g'ri YouTube URL kiritildi. (${err.message})`
 			} else if (err.message?.includes('Network error')) {
@@ -455,9 +587,8 @@ export async function runTranscriptionJob(
 			)
 		}
 
-		// --- Segment Processing Loop (No changes needed within the loop itself) ---
-		// It relies on the improved error handling in streamAudioWithYtdlCore
-		// and the promise rejection logic already in place.
+		// --- Segment Processing Loop ---
+		// Relies on improved error handling in streamAudioWithYtdlCore and promise rejection.
 		// The final catch block below will handle fatal errors propagated from the loop.
 
 		await pushTranscriptionEvent(
@@ -467,7 +598,7 @@ export async function runTranscriptionJob(
 			broadcast
 		)
 		await delay(500)
-		const segmentDuration = 150
+		const segmentDuration = 150 // 2.5 minutes
 		const numSegments = Math.ceil(totalDuration / segmentDuration)
 		jobLogger.info(`Total segments calculated: ${numSegments}`)
 
@@ -511,6 +642,7 @@ export async function runTranscriptionJob(
 				segmentDuration,
 				totalDuration - segmentStartTime
 			)
+			// Ensure duration is slightly positive for ffmpeg
 			const safeActualDuration = Math.max(0.1, actualDuration)
 			const segmentEndTime = segmentStartTime + safeActualDuration
 
@@ -519,7 +651,7 @@ export async function runTranscriptionJob(
 
 			let segmentProcessedSuccessfully = false
 			let attempt = 0
-			const maxAttempts = 2
+			const maxAttempts = 2 // Max attempts per segment
 
 			while (!segmentProcessedSuccessfully && attempt < maxAttempts) {
 				attempt++
@@ -544,7 +676,7 @@ export async function runTranscriptionJob(
 						false,
 						broadcast
 					)
-					await delay(1000 * attempt)
+					await delay(1500 * attempt) // Increased backoff
 				}
 
 				try {
@@ -558,7 +690,8 @@ export async function runTranscriptionJob(
 					segmentLogger.info(
 						`Attempting segment stream via ytdl-core...`
 					)
-					audioStream = await streamAudioWithYtdlCore(url) // Uses updated stream error logging
+					// streamAudioWithYtdlCore includes cookie handling and error logging
+					audioStream = await streamAudioWithYtdlCore(url)
 
 					segmentLogger.info(
 						`Starting FFmpeg encoding and slicing...`
@@ -567,13 +700,14 @@ export async function runTranscriptionJob(
 					// --- Wrap ffmpeg processing and upload in a Promise ---
 					await new Promise<void>((resolve, reject) => {
 						if (!audioStream) {
+							// Safety check, should not happen if streamAudio didn't throw
 							return reject(
 								new Error(
 									'ytdl audio stream was not initialized before ffmpeg.'
 								)
 							)
 						}
-						let promiseRejected = false
+						let promiseRejected = false // Flag to prevent multiple rejections
 
 						const cleanupAndReject = (
 							err: Error,
@@ -585,6 +719,7 @@ export async function runTranscriptionJob(
 								{ error: err.message, context },
 								'Error during FFmpeg/Upload, attempting cleanup.'
 							)
+							// Try to clean up resources
 							try {
 								if (
 									ffmpegOutputStream &&
@@ -595,70 +730,104 @@ export async function runTranscriptionJob(
 									)
 									ffmpegOutputStream.destroy(err)
 								}
+								// ffmpegCommand.kill() can sometimes throw if process already exited
 								if (ffmpegCommand) {
-									segmentLogger.warn(
-										`Killing ffmpeg process due to error: ${err.message}`
-									)
-									ffmpegCommand.kill('SIGKILL')
+									try {
+										segmentLogger.warn(
+											`Killing ffmpeg process due to error: ${err.message}`
+										)
+										ffmpegCommand.kill('SIGKILL') // Force kill
+									} catch (killError: any) {
+										segmentLogger.warn(
+											{ error: killError.message },
+											'Ignoring error during ffmpeg kill (process might have already exited).'
+										)
+									}
 								}
 								if (audioStream && !audioStream.destroyed) {
 									segmentLogger.warn(
 										'Destroying ytdl stream due to error...'
 									)
-									audioStream.destroy(err)
+									audioStream.destroy(err) // Destroy the input stream
 								}
-							} catch (killErr: any) {
+							} catch (cleanupErr: any) {
 								segmentLogger.warn(
-									{ error: killErr.message },
+									{ error: cleanupErr.message },
 									'Error during cleanup after main error'
 								)
 							}
-							reject(err)
+							reject(err) // Reject the main promise
 						}
 
 						// --- Create FFmpeg Command ---
 						try {
 							ffmpegCommand = ffmpeg(audioStream)
-								.inputOption(`-ss ${segmentStartTime}`)
-								.inputOption(`-to ${segmentEndTime}`)
+								// Input options MUST come before .input() or be attached to it if using file path
+								// For streams, input options are often placed before format/codec
+								.inputOption(
+									`-ss ${segmentStartTime.toFixed(3)}`
+								) // Use more precision for start time
+								// .inputOption(`-to ${segmentEndTime.toFixed(3)}`) // -to can be less reliable with streams than -t/-fs
+								.inputOption(
+									`-t ${safeActualDuration.toFixed(3)}`
+								) // Use duration instead of -to for streams
+								.noVideo() // Explicitly disable video processing
 								.format('mp3')
 								.audioCodec('libmp3lame')
 								.audioBitrate('96k')
+								.outputOptions('-map_metadata -1') // Strip metadata
 								.on('start', cmd =>
 									segmentLogger.info(`FFmpeg started: ${cmd}`)
 								)
 								.on('codecData', data => {
-									// Usually not needed unless debugging codecs
 									// segmentLogger.info( `FFmpeg codec data: ${JSON.stringify(data)}` );
 								})
 								.on('stderr', stderrLine => {
-									// Log specific FFMPEG warnings/errors if needed, otherwise keep as debug
-									segmentLogger.debug(
-										`FFmpeg stderr: ${stderrLine}`
-									)
+									// Log potentially useful ffmpeg messages
+									if (
+										stderrLine.includes('error') ||
+										stderrLine.includes('failed') ||
+										stderrLine.includes('panic')
+									) {
+										segmentLogger.warn(
+											`FFmpeg stderr: ${stderrLine}`
+										)
+									} else {
+										segmentLogger.debug(
+											`FFmpeg stderr: ${stderrLine}`
+										)
+									}
 								})
 								.on('error', (err, stdout, stderr) => {
+									// This catches errors from the ffmpeg process itself
 									segmentLogger.error(
 										{
 											message: err.message,
-											stdout, // Can be large, consider logging conditionally
-											stderr // Often contains useful error details
+											// stdout, // Usually empty for audio streams
+											stderr // Often contains the crucial error detail
 										},
 										`FFmpeg command error event`
 									)
 									let ffmpegErrMsg = `FFmpeg command failed: ${err.message}`
+									// Check stderr for clues about the input stream failing
 									if (
-										err.message.includes('Pipe closed') ||
-										err.message.includes(
+										stderr?.includes(
 											'Input/output error'
 										) ||
+										stderr?.includes('Server returned 4') || // e.g., 403 Forbidden from source
 										stderr?.includes(
-											'Server returned 403'
+											'pipe:0: End of file'
 										) ||
-										stderr?.includes('Input stream error')
+										err.message.includes('Pipe closed') ||
+										err.message.includes(
+											'Exited with code'
+										) || // General failure
+										err.message.includes(
+											'Input stream error'
+										)
 									) {
 										ffmpegErrMsg +=
-											' (Likely caused by input ytdl stream ending prematurely - check previous logs for ytdl errors)'
+											' (Often caused by input ytdl stream ending prematurely or access issues - check previous logs for ytdl errors/status codes)'
 									}
 									cleanupAndReject(
 										new Error(ffmpegErrMsg),
@@ -666,128 +835,154 @@ export async function runTranscriptionJob(
 									)
 								})
 								.on('end', () => {
-									// This 'end' only means ffmpeg *finished*, not necessarily successfully
+									// IMPORTANT: This 'end' event means ffmpeg *finished processing its input*.
+									// It does *not* guarantee the piped output (GCS upload) has finished.
+									// GCS upload success is handled by the uploadStreamToGCS promise.
 									if (!promiseRejected) {
 										segmentLogger.info(
-											'FFmpeg processing finished (end event). GCS upload should finalize.'
+											'FFmpeg processing finished (end event received). Waiting for GCS upload promise...'
 										)
+										// Do NOT resolve the promise here. Wait for the upload.
 									} else {
 										segmentLogger.warn(
-											'FFmpeg end event received, but an error occurred earlier.'
+											'FFmpeg end event received, but an error occurred earlier. Upload might be compromised.'
 										)
 									}
 								})
 
-							ffmpegOutputStream = ffmpegCommand.pipe()
+							// Pipe the output of ffmpeg directly
+							ffmpegOutputStream = ffmpegCommand.pipe() // Returns a PassThrough stream
 
 							if (!ffmpegOutputStream) {
+								// This should realistically not happen with .pipe()
 								throw new Error(
 									'ffmpegCommand.pipe() returned null or undefined.'
 								)
 							}
 						} catch (ffmpegInitError: any) {
+							// Catch errors during ffmpeg setup itself
 							return cleanupAndReject(
 								new Error(
-									`FFmpeg initialization failed: ${ffmpegInitError.message}`
+									`FFmpeg command initialization failed: ${ffmpegInitError.message}`
 								),
 								'ffmpeg_init'
 							)
 						}
 						// --- End Create FFmpeg Command ---
 
-						// Handle errors from the *input* stream (ytdl-core)
+						// --- Handle Errors on the Streams ---
+
+						// 1. Errors from the *INPUT* stream (ytdl-core) feeding FFmpeg
 						audioStream.on('error', inputError => {
-							// Logging is done in streamAudioWithYtdlCore, just reject here
-							segmentLogger.error(
-								// Still log contextually
-								{
-									error: inputError.message,
-									code: (inputError as any).code
-								},
-								'ytdl-core input stream feeding ffmpeg emitted error event'
-							)
-							// Format a detailed error message based on status/code etc.
-							let specificMsg = `Input stream error: ${inputError.message}`
+							// Logging is already done in streamAudioWithYtdlCore's 'error' handler
+							// We just need to reject the promise here.
+							let specificMsg = `Input stream error during FFmpeg pipe: ${inputError.message}`
 							const statusCode = (inputError as any).statusCode
+							const errCode = (inputError as any).code
+							// Add context based on common errors caught by streamAudioWithYtdlCore
 							if (
 								statusCode === 403 ||
 								statusCode === 401 ||
 								statusCode === 410
 							) {
-								specificMsg = `Input stream error: YouTube access error during download (Status ${statusCode}). Check cookies (${persistentCookieFilePath}). Msg: ${inputError.message}`
+								specificMsg = `Input stream error (ytdl): YouTube access denied (Status ${statusCode}). Check cookies/video status. Msg: ${inputError.message}`
 							} else if (
-								(inputError as any).code === 'ECONNRESET' ||
-								(inputError as any).code === 'ETIMEDOUT' ||
+								errCode === 'ECONNRESET' ||
+								errCode === 'ETIMEDOUT' ||
 								inputError.message.includes('socket hang up')
 							) {
-								specificMsg = `Input stream error: Network error during download (${(inputError as any).code}). Msg: ${inputError.message}`
+								specificMsg = `Input stream error (ytdl): Network error (${errCode}). Connection lost? Msg: ${inputError.message}`
+							} else if (
+								inputError.message?.includes(
+									'Could not extract functions'
+								)
+							) {
+								specificMsg = `Input stream error (ytdl): YouTube page parsing failed ('Could not extract functions'). Update 'ytdl-core'? Msg: ${inputError.message}`
 							}
+
 							cleanupAndReject(
-								new Error(specificMsg),
-								'ytdl_stream_error'
+								new Error(specificMsg), // Use the formatted message
+								'ytdl_stream_error_pipe' // Context: error during pipe
 							)
 						})
+						audioStream.on('end', () => {
+							segmentLogger.info('ytdl input stream ended.') // Good sign if ffmpeg hasn't errored yet
+						})
+						audioStream.on('close', () => {
+							segmentLogger.info('ytdl input stream closed.')
+						})
 
-						// Handle errors from the *output* stream (piping to GCS)
-						ffmpegOutputStream.on('error', outputError => {
+						// 2. Errors from the *OUTPUT* stream (ffmpeg's output being piped to GCS)
+						ffmpegOutputStream.on('error', outputPipeError => {
+							// This could be an error during the piping process itself,
+							// or potentially an error surfaced from ffmpeg not caught by its 'error' event.
 							segmentLogger.error(
-								{ error: outputError.message },
-								'Error on ffmpeg output stream during upload pipe.'
+								{ error: outputPipeError.message },
+								'Error on ffmpeg output stream during GCS pipe.'
 							)
 							cleanupAndReject(
 								new Error(
-									`FFmpeg output stream error (pipe to GCS): ${outputError.message}`
+									`FFmpeg output pipe error (to GCS): ${outputPipeError.message}`
 								),
 								'ffmpeg_output_stream_error'
 							)
 						})
-						ffmpegOutputStream.on('end', () => {
+						ffmpegOutputStream.on('finish', () => {
+							// This means the *destination* (GCS upload stream) has finished writing.
+							// This is a good indicator, but success is still determined by the upload promise.
 							segmentLogger.info(
-								'ffmpegOutputStream (pipe destination) saw end event.'
+								'ffmpegOutputStream (pipe destination/GCS) saw finish event.'
 							)
 						})
 						ffmpegOutputStream.on('close', () => {
 							segmentLogger.info(
-								'ffmpegOutputStream (pipe destination) saw close event.'
+								'ffmpegOutputStream (pipe destination/GCS) saw close event.'
 							)
 						})
 
-						// Handle GCS upload success/failure
+						// --- Handle GCS Upload Completion ---
 						uploadStreamToGCS(ffmpegOutputStream, destFileName)
 							.then(() => {
+								// Upload promise resolved successfully
 								if (!promiseRejected) {
 									gcsUploadSucceeded = true
 									segmentLogger.info(
 										`Segment successfully uploaded to ${gcsUri}`
 									)
-									resolve()
+									resolve() // Resolve the main promise HERE
 								} else {
+									// This can happen if an error occurred (e.g., input stream died)
+									// but the upload technically 'finished' writing whatever data it got.
+									// The promise was already rejected, so do nothing here.
 									segmentLogger.warn(
-										'GCS upload finished, but an error occurred earlier. Promise already rejected.'
+										'GCS upload finished, but an error occurred earlier and the promise was already rejected. File might be incomplete/corrupt.'
 									)
-									gcsUploadSucceeded = false
+									gcsUploadSucceeded = false // Mark as failed due to earlier error
 								}
 							})
 							.catch(uploadErr => {
+								// Upload promise was rejected
 								segmentLogger.error(
 									{ error: uploadErr.message },
 									'GCS upload failed.'
 								)
 								cleanupAndReject(
+									// Reject the main promise
 									new Error(
 										`GCS upload failed: ${uploadErr.message}`
 									),
 									'gcs_upload_error'
 								)
 							})
-					})
-					// --- End ffmpeg/upload Promise ---
+					}) // --- End ffmpeg/upload Promise ---
 
 					segmentLogger.info(
 						'FFmpeg/Upload promise resolved successfully.'
 					)
 
 					// --- Transcriptions & Editing ---
+					// Only proceed if the promise above resolved (meaning ffmpeg ran and upload succeeded)
+
 					segmentLogger.info('Starting Google transcription...')
 					await pushTranscriptionEvent(
 						jobId,
@@ -795,7 +990,7 @@ export async function runTranscriptionJob(
 						false,
 						broadcast
 					)
-					const transcriptGoogle = await transcribeWithGoogle(gcsUri) // Add timeout?
+					const transcriptGoogle = await transcribeWithGoogle(gcsUri) // Add timeout? Maybe inside helper
 					if (transcriptGoogle) {
 						segmentLogger.info(
 							`Google transcription done (length: ${transcriptGoogle.length}).`
@@ -804,12 +999,7 @@ export async function runTranscriptionJob(
 						segmentLogger.warn(
 							`Google transcription returned empty/null for ${gcsUri}.`
 						)
-						await pushTranscriptionEvent(
-							jobId,
-							`${segmentNumber}/${numSegments}-chi Google matnida xatolik (bo'sh natija). Davom etilmoqda...`,
-							false,
-							broadcast
-						)
+						// Don't push error yet, wait to see if ElevenLabs works
 					}
 
 					segmentLogger.info('Starting ElevenLabs transcription...')
@@ -821,9 +1011,9 @@ export async function runTranscriptionJob(
 					)
 					let transcriptElevenLabs: string | null = null
 					try {
-						const stream11 = await getGCSFileStream(gcsUri)
+						const stream11 = await getGCSFileStream(gcsUri) // Get a fresh stream
 						transcriptElevenLabs =
-							await transcribeAudioElevenLabs(stream11) // Add timeout?
+							await transcribeAudioElevenLabs(stream11) // Add timeout? Maybe inside helper
 						if (transcriptElevenLabs) {
 							segmentLogger.info(
 								`ElevenLabs transcription done (length: ${transcriptElevenLabs.length}).`
@@ -832,12 +1022,22 @@ export async function runTranscriptionJob(
 							segmentLogger.warn(
 								`ElevenLabs transcription returned empty/null for ${gcsUri}`
 							)
-							await pushTranscriptionEvent(
-								jobId,
-								`${segmentNumber}/${numSegments}-chi ElevenLabs matnida xatolik (bo'sh natija). Google natijasi bilan davom etilmoqda...`,
-								false,
-								broadcast
-							)
+							if (!transcriptGoogle) {
+								// If Google also failed/empty
+								await pushTranscriptionEvent(
+									jobId,
+									`${segmentNumber}/${numSegments}-chi bo'lak: Google va ElevenLabs matnlari bo'sh. Xatolik.`,
+									false,
+									broadcast
+								)
+							} else {
+								await pushTranscriptionEvent(
+									jobId,
+									`${segmentNumber}/${numSegments}-chi bo'lak: ElevenLabs matni bo'sh. Google natijasi ishlatiladi.`,
+									false,
+									broadcast
+								)
+							}
 						}
 					} catch (elevenLabsError: any) {
 						segmentLogger.error(
@@ -845,11 +1045,12 @@ export async function runTranscriptionJob(
 							`ElevenLabs transcription failed for ${gcsUri}`
 						)
 						if (!transcriptGoogle) {
-							// Only fail job if both sources failed
+							// FATAL for this segment if both sources failed
 							throw new Error(
-								`ElevenLabs failed and Google text is also empty: ${elevenLabsError.message}`
+								`ElevenLabs failed (${elevenLabsError.message}) and Google text is also empty/null.`
 							)
 						} else {
+							// Non-fatal if Google text exists
 							await pushTranscriptionEvent(
 								jobId,
 								`${segmentNumber}/${numSegments}-chi ElevenLabs matnida xatolik (${elevenLabsError.message}). Google natijasi bilan davom etilmoqda...`,
@@ -860,15 +1061,17 @@ export async function runTranscriptionJob(
 					}
 
 					const googleInput = transcriptGoogle || ''
+					// Use Google text if 11Labs failed or returned null/empty, ONLY IF Google text exists.
+					// If Google text is also empty, keep elevenLabsInput null.
 					const elevenLabsInput =
-						transcriptElevenLabs || (transcriptGoogle ? '' : null) // Use Google if 11Labs failed/empty, else null/empty
+						transcriptElevenLabs ?? (googleInput ? '' : null)
 
+					// Check if *both* are effectively empty or failed
 					if (googleInput === '' && elevenLabsInput === null) {
-						// Check if *both* are effectively empty
 						segmentLogger.error(
 							`Both Google and ElevenLabs transcription failed or returned empty for ${gcsUri}`
 						)
-						throw new Error(
+						throw new Error( // This will trigger retry or job failure
 							'Both Google and ElevenLabs transcription failed or returned empty.'
 						)
 					}
@@ -880,15 +1083,18 @@ export async function runTranscriptionJob(
 						false,
 						broadcast
 					)
+					// Provide Google text always. Provide 11Labs text if it exists (is not null).
 					const finalText = await editTranscribed(
 						googleInput,
-						elevenLabsInput ?? ''
-					) // Pass empty string if null, add timeout?
+						elevenLabsInput // Pass null if 11Labs failed/empty and Google was also empty
+					) // Add timeout? Maybe inside helper
 					if (!finalText) {
 						segmentLogger.error(
-							`Gemini editing returned empty/null for ${gcsUri}`
+							`Gemini editing returned empty/null for ${gcsUri}. Input G: ${googleInput.length}, 11L: ${elevenLabsInput?.length ?? 'null'}`
 						)
-						throw new Error('Gemini editing returned empty.')
+						throw new Error(
+							'Gemini editing returned empty or failed.'
+						) // Trigger retry/fail
 					} else {
 						segmentLogger.info(
 							`Gemini editing done (length: ${finalText.length}).`
@@ -896,7 +1102,7 @@ export async function runTranscriptionJob(
 					}
 
 					editedTexts.push(finalText)
-					segmentProcessedSuccessfully = true
+					segmentProcessedSuccessfully = true // Mark success for this attempt
 					await pushTranscriptionEvent(
 						jobId,
 						`${segmentNumber}/${numSegments}-chi bo'lak tayyor!`,
@@ -904,9 +1110,10 @@ export async function runTranscriptionJob(
 						broadcast
 					)
 					segmentLogger.info(
-						`Segment ${segmentNumber} processed successfully.`
+						`Segment ${segmentNumber} processed successfully on attempt ${attempt}.`
 					)
 				} catch (segmentErr: any) {
+					// Catch errors from the ffmpeg/upload promise or transcription/editing steps
 					segmentLogger.error(
 						{
 							error: segmentErr.message,
@@ -921,49 +1128,58 @@ export async function runTranscriptionJob(
 						broadcast
 					)
 
-					// --- Check for Fatal Errors (using the formatted errors from stream/ffmpeg/other steps) ---
-					// These errors will stop the *entire job*
-					if (
-						segmentErr.message?.includes('Input stream error:') || // Covers ytdl network/access errors during download
-						segmentErr.message?.includes(
-							'FFmpeg command failed:'
-						) || // Covers ffmpeg execution errors
-						segmentErr.message?.includes(
-							'FFmpeg output stream error:'
-						) || // Covers pipe errors
-						segmentErr.message?.includes(
-							'FFmpeg initialization failed'
-						) || // Covers ffmpeg setup errors
-						segmentErr.message?.includes('GCS upload failed') || // Covers storage errors
-						segmentErr.message?.includes(
-							'Both Google and ElevenLabs transcription failed'
-						) || // Covers fatal transcription failure
-						segmentErr.message?.includes(
-							'Gemini editing returned empty'
-						) || // Covers fatal editing failure
-						segmentErr.message?.includes(
-							'ytdl audio stream was not initialized'
-						) // Covers internal error
-					) {
+					// --- Check for Fatal Errors that should stop the *entire job* ---
+					// Use the detailed, formatted error messages from various stages.
+					// These errors indicate problems unlikely to be fixed by retrying the segment.
+					const fatalErrorMessages = [
+						'Input stream error (ytdl): YouTube access denied', // Cookie/permission issues
+						'Input stream error (ytdl): YouTube page parsing failed', // ytdl-core needs update
+						'FFmpeg command initialization failed', // ffmpeg setup problem
+						'GCS upload failed', // Storage issue
+						'GOOGLE_CLOUD_BUCKET_NAME', // Config error found later
+						'Bucket topilmadi', // Config error
+						// Don't make transcription/Gemini failures fatal immediately, allow retry
+						// 'Both Google and ElevenLabs transcription failed',
+						// 'Gemini editing returned empty',
+						// Consider making persistent network errors fatal?
+						'Input stream error (ytdl): Network error' // Maybe fatal if persistent
+						// FFmpeg errors related to input stream often reflect the ytdl errors above
+						// 'Often caused by input ytdl stream ending prematurely'
+					]
+
+					const isFatal = fatalErrorMessages.some(msg =>
+						segmentErr.message?.includes(msg)
+					)
+
+					if (isFatal) {
 						let userMsg = `Jarayon ${segmentNumber}/${numSegments}-chi bo'lakda tuzatib bo'lmas xatolik tufayli to'xtatildi: ${segmentErr.message}`
 						// Add specific Uzbek translation based on error content
 						if (
 							segmentErr.message?.includes(
-								'Input stream error: YouTube access error'
+								'Input stream error (ytdl): YouTube access denied'
 							)
 						) {
-							userMsg = `Xatolik: YouTube kirish xatosi (yuklash paytida ${segmentNumber}/${numSegments}). Cookie fayli (${persistentCookieFilePath}) yaroqsiz/video maxfiy? Jarayon to'xtatildi.`
+							userMsg = `Xatolik: YouTube kirish xatosi (yuklash paytida ${segmentNumber}/${numSegments}). Cookie fayli (${persistentCookieFilePath}) yaroqsiz/video maxfiy/a'zolar uchun? Jarayon to'xtatildi.`
 						} else if (
 							segmentErr.message?.includes(
-								'Input stream error: Network error'
+								'Input stream error (ytdl): YouTube page parsing failed'
+							)
+						) {
+							userMsg = `Xatolik: YouTube sahifasini o'qishda muammo (ytdl-core ${segmentNumber}/${numSegments}). Kutubxonani yangilang? Jarayon to'xtatildi.`
+						} else if (
+							segmentErr.message?.includes(
+								'Input stream error (ytdl): Network error'
 							)
 						) {
 							userMsg = `Xatolik: Tarmoq xatosi (YouTube'ga ulanish uzildi ${segmentNumber}/${numSegments}). Jarayon to'xtatildi.`
 						} else if (segmentErr.message?.includes('FFmpeg')) {
-							userMsg = `Xatolik: Audio kodlashda muammo (FFmpeg ${segmentNumber}/${numSegments}). Jarayon to'xtatildi.`
+							// Use generic if cause isn't input stream
+							if (!segmentErr.message?.includes('ytdl stream')) {
+								userMsg = `Xatolik: Audio kodlashda muammo (FFmpeg ${segmentNumber}/${numSegments}). Jarayon to'xtatildi.`
+							} // else: handled by input stream messages
 						} else if (segmentErr.message?.includes('GCS')) {
 							userMsg = `Xatolik: Audio bo'lakni saqlashda muammo (GCS ${segmentNumber}/${numSegments}). Jarayon to'xtatildi.`
-						} // Keep others using the detailed technical message
+						} // Other fatal errors use the detailed technical message
 
 						segmentLogger.error(
 							`Fatal error occurred during segment ${segmentNumber} processing. Aborting job.`
@@ -971,27 +1187,19 @@ export async function runTranscriptionJob(
 						await pushTranscriptionEvent(
 							jobId,
 							userMsg,
-							true,
+							true, // Mark job as completed (with error)
 							broadcast
 						)
-						throw segmentErr // Re-throw to exit the main try block
+						throw segmentErr // Re-throw the fatal error to exit the main try block
 					}
-					// Non-fatal errors (e.g., temporary transcription hiccups if one source works) allow retry loop
 
-					await delay(2000 + attempt * 1000) // Backoff before retry
+					// If the error wasn't deemed fatal, the retry loop will continue (if attempts remain)
+					// Add delay before retry
+					await delay(2000 + attempt * 1500) // Exponential backoff
 				} finally {
 					segmentLogger.debug('Entering segment finally block.')
-					// Cleanup streams, especially if an error occurred mid-process or before upload
-					if (
-						!segmentProcessedSuccessfully &&
-						attempt < maxAttempts
-					) {
-						// Only log if retrying
-						segmentLogger.warn(
-							`Segment ${segmentNumber} attempt ${attempt} failed. Cleaning up before retry.`
-						)
-					}
-					// Ensure streams are destroyed, especially the input stream if ffmpeg failed
+					// --- Cleanup for the current attempt ---
+					// Ensure streams are destroyed to prevent leaks, especially if an error occurred mid-process
 					try {
 						if (
 							ffmpegOutputStream &&
@@ -1002,37 +1210,50 @@ export async function runTranscriptionJob(
 						if (audioStream && !audioStream.destroyed) {
 							audioStream.destroy()
 						}
+						if (ffmpegCommand) {
+							// Attempt to kill ffmpeg process if it's lingering after error/completion
+							// This might fail if already exited, so wrap in try-catch
+							try {
+								ffmpegCommand.kill('SIGKILL')
+							} catch (e) {
+								/* ignore */
+							}
+						}
 					} catch (finalCleanupErr: any) {
 						segmentLogger.warn(
 							{ error: finalCleanupErr.message },
-							'Error during final stream cleanup check.'
+							'Error during final stream cleanup check in finally block.'
 						)
 					}
 
-					// Delete GCS file *only* if upload succeeded on this attempt
+					// --- GCS File Cleanup ---
+					// Delete GCS file ONLY if the upload succeeded in this attempt,
+					// regardless of whether subsequent transcription/editing failed (to allow retry)
 					if (gcsUploadSucceeded) {
 						try {
 							segmentLogger.info(
-								`Attempting to delete GCS file: ${destFileName}`
+								`Attempting to delete GCS file post-processing: ${destFileName}`
 							)
 							await deleteGCSFile(destFileName)
 							segmentLogger.info(
 								`Successfully deleted GCS file: ${destFileName}`
 							)
 						} catch (deleteErr: any) {
+							// Log as warning, don't fail the job for failed cleanup
 							segmentLogger.warn(
 								{
 									error: deleteErr.message,
 									file: destFileName
 								},
-								`Failed to delete GCS segment file: ${destFileName}. Continuing job.`
+								`Failed to delete GCS segment file after processing: ${destFileName}. Continuing job.`
 							)
 						}
 					} else if (
-						attempt === maxAttempts &&
-						!segmentProcessedSuccessfully
+						!segmentProcessedSuccessfully &&
+						attempt >= maxAttempts
 					) {
-						// If all attempts failed, try deleting the GCS file just in case it was uploaded on a failed attempt
+						// If all attempts failed for this segment, try a final cleanup delete
+						// in case a file was partially uploaded on the last failed attempt.
 						segmentLogger.warn(
 							`Segment ${segmentNumber} failed all attempts. Attempting cleanup delete of GCS file ${destFileName} just in case.`
 						)
@@ -1042,7 +1263,7 @@ export async function runTranscriptionJob(
 								`Cleanup deletion of ${destFileName} succeeded (or file didn't exist).`
 							)
 						} catch (cleanupDeleteErr: any) {
-							// Don't warn too loudly if cleanup fails
+							// Don't warn too loudly if cleanup fails, file might not exist
 							segmentLogger.info(
 								{
 									error: cleanupDeleteErr.message,
@@ -1053,18 +1274,20 @@ export async function runTranscriptionJob(
 						}
 					}
 					// No delay needed here unless debugging rate limits etc.
-				}
-			} // End retry loop
+				} // End finally block for segment attempt
+			} // --- End retry loop for segment ---
 
+			// After the retry loop, check if the segment was processed
 			if (!segmentProcessedSuccessfully) {
-				// This means all retries failed for a segment
+				// This means all retries failed for this segment
 				jobLogger.error(
 					`Segment ${segmentNumber}/${numSegments} failed after ${maxAttempts} attempts. Aborting job.`
 				)
+				// Push final error message to user
 				await pushTranscriptionEvent(
 					jobId,
-					`Xatolik: ${segmentNumber}/${numSegments}-chi bo'lakni ${maxAttempts} urinishda ham ishlab bo'lmadi. Jarayon to'xtatildi.`,
-					true,
+					`Xatolik: ${segmentNumber}/${numSegments}-chi bo'lakni ${maxAttempts} urinishda ham ishlab bo'lmadi. Oxirgi xato loglarda bo'lishi kerak. Jarayon to'xtatildi.`,
+					true, // Mark job completed (with error)
 					broadcast
 				)
 				// Throw a specific error indicating retry exhaustion
@@ -1073,8 +1296,9 @@ export async function runTranscriptionJob(
 				)
 			}
 
-			i++ // Move to the next segment
-		} // End segment loop
+			// If successful, move to the next segment
+			i++
+		} // --- End segment loop (while i < numSegments) ---
 
 		// --- Combine and Finalize ---
 		jobLogger.info(
@@ -1097,10 +1321,11 @@ export async function runTranscriptionJob(
 		)
 		await delay(500)
 
+		// Combine results, remove excessive newlines, trim whitespace
 		const combinedResult = editedTexts
-			.join('\n\n')
-			.replace(/(\n\s*){3,}/g, '\n\n')
-			.trim()
+			.join('\n\n') // Join segments with double newline
+			.replace(/(\n\s*){3,}/g, '\n\n') // Replace 3+ newlines with just two
+			.trim() // Remove leading/trailing whitespace
 
 		const duration = performance.now() - startTime
 		jobLogger.info(`Job completed in ${formatDuration(duration)}`)
@@ -1113,6 +1338,7 @@ export async function runTranscriptionJob(
 		await delay(500)
 
 		const finalTitle = videoInfo.title || "Noma'lum Sarlavha"
+		// Format the final HTML output
 		const finalTranscript = `<i style="display: block; font-style: italic; text-align: center; margin-bottom: 1rem; font-size: 0.9em; color: #555;">🕒 Transkripsiya uchun ${formatDuration(duration)} vaqt ketdi.</i>
 <h1 style="font-weight: 700; font-size: 1.8rem; margin: 0.5rem 0 1.5rem; text-align: center; line-height: 1.2;">${finalTitle}</h1>
 <p style="text-indent: 30px; line-height: 1.6;">${convertToUzbekLatin(combinedResult)}</p>`
@@ -1120,19 +1346,26 @@ export async function runTranscriptionJob(
 		await transcriptService.saveFinalTranscript(jobId, finalTranscript)
 		jobLogger.info(`Final transcript saved.`)
 		await pushTranscriptionEvent(jobId, finalTranscript, true, broadcast) // Mark success
-		jobStatusUpdated = true
+		jobStatusUpdated = true // Ensure status isn't marked as error in final catch
 	} catch (err: any) {
-		// Main catch block for errors from getInfo or fatal errors from segment loop
+		// --- Main Catch Block ---
+		// Catches errors from:
+		// 1. Initial getVideoInfoWithYtdlCore (already translated for user)
+		// 2. Fatal errors thrown from within the segment loop (already translated for user)
+		// 3. Retry exhaustion error from the segment loop (already translated for user)
+		// 4. Bucket name missing error (already translated for user)
+		// 5. Any other unexpected errors before or after the loop.
+
 		jobLogger.error(
-			{ error: err.message, stack: err.stack?.substring(0, 700) }, // Log full processed error
+			{ error: err.message, stack: err.stack?.substring(0, 700) },
 			'Critical error caught in runTranscriptionJob main try-catch block'
 		)
 
+		// Ensure the job status is marked as 'error' in the DB if it wasn't already
 		if (!jobStatusUpdated) {
-			// Ensure status is marked as error only once
 			try {
 				await transcriptService.error(jobId)
-				jobStatusUpdated = true
+				jobStatusUpdated = true // Mark it as updated now
 			} catch (dbErr: any) {
 				jobLogger.error(
 					{ error: dbErr.message },
@@ -1141,62 +1374,47 @@ export async function runTranscriptionJob(
 			}
 		}
 
-		// --- Final Error Reporting to User (using detailed error message) ---
-		if (broadcast) {
-			try {
-				// Default message if specific translation isn't available
-				let clientErrorMessage = `Serverda kutilmagan xatolik yuz berdi. Jarayon to'xtatildi. (${err.message || 'No details'})`
+		// --- Final Error Reporting to User ---
+		// If a specific user message wasn't already pushed by the code that threw the error,
+		// push a generic one here. Check if the error message suggests it was already handled.
+		if (broadcast && !jobStatusUpdated) {
+			// Check jobStatusUpdated again; if true, message was likely sent
+			// Check if error message looks like one of our pre-translated fatal errors
+			const alreadyHandledMessages = [
+				'Xatolik:', // Our Uzbek error prefix
+				'Failed to process segment', // Retry exhaustion message
+				'Server konfiguratsiya xatosi' // Bucket error
+			]
+			const alreadyHandled = alreadyHandledMessages.some(msg =>
+				err.message?.includes(msg)
+			)
 
-				// Use specific translations based on the error message content
-				if (err.message?.includes('Could not extract functions')) {
-					clientErrorMessage = `Xatolik: YouTube sahifasini o'qishda muammo ('Could not extract functions'). YouTube sayt tuzilishini o'zgartirgan bo'lishi mumkin. **Iltimos, serverdagi 'ytdl-core' kutubxonasini yangilang.** Video URL to'g'riligini va unga kirish mumkinligini tekshiring.`
-				} else if (
-					err.message?.includes('No downloadable formats found')
-				) {
-					clientErrorMessage = `Xatolik: Video uchun yuklab olinadigan formatlar topilmadi. Video hudud bo'yicha cheklangan, maxfiy, hali boshlanmagan jonli efir/premyera bo'lishi yoki cookie fayllar yetarli bo'lmasligi mumkin (${persistentCookieFilePath}).`
-				} else if (err.message?.includes('YouTube access error')) {
-					clientErrorMessage = `Xatolik: YouTube kirish xatosi (info/yuklash). Video maxfiy/mavjud emas/yosh cheklovi/eskirgan cookie (${persistentCookieFilePath})? Jarayon to'xtatildi. (${err.message})`
-				} else if (err.message?.includes('Invalid YouTube URL?')) {
-					clientErrorMessage = `Xatolik: Noto'g'ri YouTube URL kiritildi. (${err.message})`
-				} else if (err.message?.includes('Network error')) {
-					clientErrorMessage = `Xatolik: Tarmoq xatosi (YouTube'ga ulanish/javob olishda muammo). Internet ulanishingizni yoki YouTube statusini tekshiring. (${err.message})`
-				} else if (err.message?.includes('FFmpeg')) {
-					clientErrorMessage = `Xatolik: Audio faylni kodlashda muammo (FFmpeg). Jarayon to'xtatildi. (${err.message})`
-				} else if (err.message?.includes('GCS')) {
-					clientErrorMessage = `Xatolik: Audio bo'lakni bulutga saqlashda muammo (GCS). Jarayon to'xtatildi. (${err.message})`
-				} else if (
-					err.message?.includes('transcription failed') ||
-					err.message?.includes('Gemini editing')
-				) {
-					clientErrorMessage = `Xatolik: Matnni o'girishda/tahrirda tuzatib bo'lmas xatolik. Jarayon to'xtatildi. (${err.message})`
-				} else if (err.message?.includes('Failed to process segment')) {
-					// Retry exhaustion
-					clientErrorMessage = `Xatolik: ${err.message}` // Pass the specific segment failure message
-				} else if (
-					err.message?.includes('GOOGLE_CLOUD_BUCKET_NAME') ||
-					err.message?.includes('Bucket topilmadi')
-				) {
-					clientErrorMessage = `Server konfiguratsiya xatosi: Bucket topilmadi.`
+			if (!alreadyHandled) {
+				try {
+					// Provide a generic fallback message if the specific error wasn't caught/translated earlier
+					let clientErrorMessage = `Serverda kutilmagan xatolik yuz berdi va jarayon to'xtatildi. Texnik tafsilotlar: (${err.message || 'No details'})`
+
+					// Push this generic message
+					await pushTranscriptionEvent(
+						jobId,
+						clientErrorMessage,
+						true, // Mark completed (with error)
+						broadcast
+					)
+				} catch (sseErr: any) {
+					jobLogger.error(
+						{ error: sseErr.message },
+						'Failed to send final generic error event in main catch block'
+					)
 				}
-				// Other unexpected errors will use the default message with the technical error details
-
-				await pushTranscriptionEvent(
-					jobId,
-					clientErrorMessage,
-					true,
-					broadcast
-				)
-			} catch (sseErr: any) {
-				jobLogger.error(
-					{ error: sseErr.message },
-					'Failed to send final error event'
-				)
 			}
 		}
 	} finally {
+		// This block always runs, regardless of success or failure
 		const finalDuration = performance.now() - startTime
 		jobLogger.info(
 			`Transcription job function finished execution after ${formatDuration(finalDuration)}.`
 		)
+		// Consider final cleanup steps if necessary (e.g., releasing locks), though stream/file cleanup is handled per-segment.
 	}
 }
